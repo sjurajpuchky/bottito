@@ -1,0 +1,66 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="DuplicatedCode" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <Languages>
+        <language minSize="1267" name="Python" />
+      </Languages>
+    </inspection_tool>
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <value>
+          <list size="18">
+            <item index="0" class="java.lang.String" itemvalue="Keras-Preprocessing" />
+            <item index="1" class="java.lang.String" itemvalue="scipy" />
+            <item index="2" class="java.lang.String" itemvalue="tensorflow" />
+            <item index="3" class="java.lang.String" itemvalue="tensorflow-estimator" />
+            <item index="4" class="java.lang.String" itemvalue="ufal.morphodita" />
+            <item index="5" class="java.lang.String" itemvalue="tensorboard" />
+            <item index="6" class="java.lang.String" itemvalue="scikit-learn" />
+            <item index="7" class="java.lang.String" itemvalue="h5py" />
+            <item index="8" class="java.lang.String" itemvalue="dataclassses-json" />
+            <item index="9" class="java.lang.String" itemvalue="abc" />
+            <item index="10" class="java.lang.String" itemvalue="openai" />
+            <item index="11" class="java.lang.String" itemvalue="keyboard" />
+            <item index="12" class="java.lang.String" itemvalue="tk" />
+            <item index="13" class="java.lang.String" itemvalue="pytesseract" />
+            <item index="14" class="java.lang.String" itemvalue="pillow" />
+            <item index="15" class="java.lang.String" itemvalue="pyautogui" />
+            <item index="16" class="java.lang.String" itemvalue="opencv-python-headless" />
+            <item index="17" class="java.lang.String" itemvalue="pystray" />
+          </list>
+        </value>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="PyPep8Inspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <option name="ignoredErrors">
+        <list>
+          <option value="E722" />
+          <option value="E303" />
+        </list>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="PyPep8NamingInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <option name="ignoredErrors">
+        <list>
+          <option value="N806" />
+        </list>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="PyUnresolvedReferencesInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredIdentifiers">
+        <list>
+          <option value="bytes.remove_trademarks" />
+          <option value="bytes.text" />
+          <option value="win32api" />
+          <option value="win32file" />
+          <option value="str.__truediv__" />
+          <option value="app.AppKit" />
+          <option value="app2.AppKit" />
+          <option value="app3.AppKit" />
+          <option value="app4.AppKit" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>
