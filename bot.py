@@ -560,10 +560,10 @@ async def receive_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         user.is_subscribed = True
                         session.commit()
                         referral_user = session.execute(
-                            select(User.id).where(
+                            select(User).where(
                                 User.referral_id == user.referral_id
                             )
-                        ).first()
+                        ).scalar_one_or_none()
                         if referral_user:
                             payout_referral(referral_user, user)
                         await update.message.reply_text("✅ Your transaction was checked successfully.")
