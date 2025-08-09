@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import datetime
 import json
 import logging
@@ -7,8 +8,11 @@ import re
 from _decimal import Decimal
 
 import dotenv
+import httpx as httpx
 import requests
 import websockets
+from solders.pubkey import Pubkey
+from solders.solders import Keypair, transfer, VersionedTransaction, Hash, MessageV0
 from sqlalchemy import create_engine
 from sqlalchemy import delete, select
 from sqlalchemy.orm import sessionmaker, Session
@@ -435,23 +439,25 @@ async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user: User = res.scalar_one_or_none()
 
         earned = 0
-        un_payments = session.execute(select(User)
-            .where(ReferralPayment.user_id == update.effective_user.id)) \
-            .where(ReferralPayment.payment_datetime is None) \
-            .scalars()
+        un_payments = session.execute(select(ReferralPayment)
+        .where(
+            ReferralPayment.user_id == update.effective_user.id,
+            ReferralPayment.payment_datetime.is_(None))).scalars().all()
 
         for payment in un_payments:
             earned = earned + payment.amount_lamports
 
+        earned = round(Decimal(earned / 1_000_000_000), 9)
+
         if user is not None:
-            help_text = f"""🤖 *Settings*\n\n*Your wallet: {user.wallet_address}*
+            help_text = f"""🤖 *Referral Program*\n\n*Your wallet: {user.wallet_address}*
 Our referral program pays you 25% of each subscription registered upon your link.
-You have earned: *{earned} SOL*            
+You have earned: 💰 *{earned} SOL*            
             \n"""
 
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✏️ Edit Your SOL Wallet", callback_data=f"edit_wallet")],
-                [InlineKeyboardButton(f"✏️ Claim {earned} SOL", callback_data=f"claim")]
+                [InlineKeyboardButton(f"💰 Claim {earned} SOL", callback_data=f"claim")]
             ])
 
             await update.message.reply_text(help_text, parse_mode="Markdown", reply_markup=keyboard)
@@ -597,6 +603,73 @@ async def edit_hash_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.message.reply_text("✍️ Send transaction hash (Solana):")
 
 
+def load_payer() -> Keypair:
+    return Keypair.from_base58_string(WALLET_PK)
+
+
+async def rpc(method: str, params: list):
+    async with httpx.AsyncClient(timeout=20) as client:
+        res = await client.post(SOLANA_HTTP, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+        res.raise_for_status()
+        data = res.json()
+        if "error" in data:
+            raise RuntimeError(data["error"])
+        return data["result"]
+
+
+async def send_transaction(recipient: str, lamports: int) -> str:
+    if lamports <= 0:
+        raise ValueError("lamports must be > 0")
+
+    payer = load_payer()
+    to_pk = Pubkey.from_string(recipient)
+
+    # 1) Get latest blockhash
+    lbh = await rpc("getLatestBlockhash", [{"commitment": "finalized"}])
+    blockhash = Hash.from_string(lbh["value"]["blockhash"])
+
+    # 2) Build transfer instruction (no TransferParams in 0.26)
+    ix = transfer(payer.pubkey(), to_pk, lamports)
+
+    # 3) Compile v0 message (no LUTs)
+    msg = MessageV0.try_compile(payer.pubkey(), [ix], [], blockhash)
+
+    # 4) Sign versioned transaction
+    vtx = VersionedTransaction(msg, [payer])
+
+    # 5) Send via RPC
+    tx_b64 = base64.b64encode(bytes(vtx)).decode()
+    sig = await rpc("sendTransaction", [tx_b64, {"encoding": "base64", "skipPreflight": False}])
+    return sig
+
+
+async def claim_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = update.effective_user.id
+
+    with SessionLocal() as session:
+        res = session.execute(select(User).where(User.id == update.effective_user.id))
+        user: User = res.scalar_one_or_none()
+
+        if user is not None and user.wallet_address != "":
+            earned = 0
+            un_payments = session.execute(select(ReferralPayment)
+            .where(
+                ReferralPayment.user_id == update.effective_user.id,
+                ReferralPayment.payment_datetime.is_(None))).scalars().all()
+
+            for payment in un_payments:
+                earned = earned + payment.amount_lamports
+
+            tx_hash = await send_transaction(user.wallet_address, earned)
+            earned = round(Decimal(earned / 1_000_000_000), 9)
+            await query.message.reply_text(f"✅ Transaction sent {tx_hash} {earned} SOL.")
+        else:
+            await query.message.reply_text("✍️ You does not have configured your Wallet Address yet.")
+
+
 async def main():
     uri = "wss://pumpportal.fun/api/data"
 
@@ -613,6 +686,7 @@ async def main():
     # Callback query handlers
     bot_app.add_handler(CallbackQueryHandler(edit_wallet_callback, pattern=r"^edit_wallet$"))
     bot_app.add_handler(CallbackQueryHandler(edit_hash_callback, pattern=r"^edit_hash$"))
+    bot_app.add_handler(CallbackQueryHandler(claim_callback, pattern=r"^claim$"))
     # Message handler
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_text_input))
     bot_app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, on_member_left))
