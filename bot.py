@@ -378,16 +378,17 @@ async def membership_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
             expiry = str(user.subscribed_expiry_at)
 
-            reply_keyboard = None
-
-            if user.subscribed_expiry_at > _now():
+            if int(user.subscribed_expiry_at.timestamp()) > int(_now().timestamp()):
                 message = f"🤖 *Your membership is: {subscription} is expiry {expiry} *\n\n"
             else:
-                message = f"🤖 *Your membership is: {subscription} is expired *\n\n"
-                reply_keyboard = InlineKeyboardButton("💰 Pay 0.1 SOL for monthly subscription",
-                                                      url=f"https://phantom.app/ul/send?recipient={WALLET_ADDRESS}&amount=0.1&reference={user.id}&label=Subscription&message=Bottito%20Search%20Bot%20monthly%20subsciption")
+                message = f"""🤖 *Your membership is: {subscription} is expired *\n\n
+                    💰 Pay 0.01 SOL fee for monthly subscription\n
+                    to: *{WALLET_ADDRESS}*\n
+                    with Reference: *{user.id}*\n
+                    !!! Is important to put reference, this is how we pair payments !!!\n\n
+                """
 
-            await update.message.reply_text(message, parse_mode="Markdown", reply_markup=reply_keyboard)
+            await update.message.reply_text(message, parse_mode="Markdown", reply_markup=reply_markup)
         else:
             await update.message.reply_text(f"🤖 * Call /start first to register *\n", parse_mode="Markdown")
 
