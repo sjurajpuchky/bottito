@@ -387,9 +387,9 @@ async def membership_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 reply_keyboard = InlineKeyboardButton("💰 Pay 0.1 SOL for monthly subscription",
                                                       url=f"https://phantom.app/ul/send?recipient={WALLET_ADDRESS}&amount=0.1&reference={user.id}&label=Subscription&message=Bottito%20Search%20Bot%20monthly%20subsciption")
 
-        await update.message.reply_text(message, parse_mode="Markdown", reply_markup=reply_keyboard)
-    else:
-    await update.message.reply_text(f"🤖 * Call /start first to register *\n", parse_mode="Markdown")
+            await update.message.reply_text(message, parse_mode="Markdown", reply_markup=reply_keyboard)
+        else:
+            await update.message.reply_text(f"🤖 * Call /start first to register *\n", parse_mode="Markdown")
 
 
 async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
