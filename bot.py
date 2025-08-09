@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+from _decimal import Decimal
 
 import dotenv
 import requests
@@ -26,7 +27,7 @@ from telegram.ext import (
 )
 from websockets import ConnectionClosedError, WebSocketException
 
-from dbase import Base, User
+from dbase import Base, User, TransactionSignature
 
 # -------------------------------
 # ✅ Logging Configuration
@@ -50,8 +51,21 @@ HEADERS = {
 }
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+SOLANA_WSS = os.getenv("SOLANA_WSS")
+SOLANA_HTTP = os.getenv("SOLANA_HTTP")
 WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
 WALLET_PK = os.getenv("WALLET_PK")
+
+EXPECTED_SOL = Decimal("0.001")  # 0.01 SOL
+REFERRAL_LAMPORTS = int(EXPECTED_SOL * Decimal("0.25") * Decimal(1_000_000_000))
+EXPECTED_LAMPORTS = int(EXPECTED_SOL * Decimal(1_000_000_000))
+SYSTEM_PROGRAM = "11111111111111111111111111111111"
+
+if not WALLET_ADDRESS:
+    raise SystemExit("Set WALLET_ADDRESS env var.")
+
+if not WALLET_PK:
+    raise SystemExit("Set WALLET_PK env var.")
 
 if not BOT_TOKEN:
     raise RuntimeError("Missing BOT_TOKEN")
@@ -65,6 +79,27 @@ DATABASE_URL = f"mysql+mysqlconnector://{os.getenv('MYSQL_USER')}:{os.getenv('MY
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base.metadata.create_all(engine)
+
+pending_profile_edits = {}
+pending_hash_edits = {}
+
+
+def fetch_tx(signature: str):
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getTransaction",
+        "params": [
+            signature,
+            {"encoding": "jsonParsed","maxSupportedTransactionVersion": 0, "commitment": "confirmed"}
+        ],
+    }
+    r = requests.post(SOLANA_HTTP, json=payload, timeout=20)
+    r.raise_for_status()
+    res = r.json()
+    if "error" in res:
+        raise RuntimeError(res["error"])
+    return res.get("result")
 
 
 async def on_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -377,18 +412,19 @@ async def membership_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 subscription = "Trial"
 
             expiry = str(user.subscribed_expiry_at)
+            keyboard = None
 
             if int(user.subscribed_expiry_at.timestamp()) > int(_now().timestamp()):
                 message = f"🤖 *Your membership is: {subscription} is expiry {expiry} *\n\n"
             else:
-                message = f"""🤖 *Your membership is: {subscription} is expired *\n\n
-                    💰 Pay 0.01 SOL fee for monthly subscription\n
-                    to: *{WALLET_ADDRESS}*\n
-                    with Reference: *{user.id}*\n
-                    !!! Is important to put reference, this is how we pair payments !!!\n\n
-                """
+                message = f"""🤖 *Your membership is: {subscription} is expired *\n
+💰 Pay 0.01 SOL fee for monthly subscription
+to: *{WALLET_ADDRESS}*"""
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✏️ Enter your Transaction Hash", callback_data=f"edit_hash")]
+                ])
 
-            await update.message.reply_text(message, parse_mode="Markdown", reply_markup=reply_markup)
+            await update.message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
         else:
             await update.message.reply_text(f"🤖 * Call /start first to register *\n", parse_mode="Markdown")
 
@@ -399,7 +435,9 @@ async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user: User = res.scalar_one_or_none()
 
         if user is not None:
-            help_text = f"""🤖 *Settings*\n\n*Your wallet: {user.wallet_address}*\n"""
+            help_text = f"""🤖 *Referral program*\n\n*Your wallet: {user.wallet_address}*
+            Our referral program pays you 25% of each subscription registered upon your link.
+            \n"""
 
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✏️ Edit Your SOL Wallet", callback_data=f"edit_wallet")]
@@ -410,7 +448,37 @@ async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"🤖 * Call /start first to register *\n", parse_mode="Markdown")
 
 
-pending_profile_edits = {}
+def check_transaction(signature):
+    if not WALLET_ADDRESS:
+        raise ValueError("WALLET_ADDRESS env var is required")
+
+    tx = fetch_tx(signature)
+    if not tx:
+        logger.warning(f"Not tx")
+        return False
+
+    msg = (tx.get("transaction") or {}).get("message") or {}
+    total_to_wallet = 0
+
+    # Top-level parsed instructions
+    for ix in msg.get("instructions", []):
+        if ix.get("programId") != SYSTEM_PROGRAM:
+            continue
+        parsed = ix.get("parsed") or {}
+        if parsed.get("type") != "transfer":
+            continue
+        info = parsed.get("info") or {}
+        dest = info.get("destination")
+        lamports = int(info.get("lamports", 0))
+        if dest == WALLET_ADDRESS:
+            total_to_wallet += lamports
+
+    ok = (total_to_wallet == EXPECTED_LAMPORTS)
+    return ok
+
+
+def payout_referral(referral_user):
+    pass
 
 
 async def receive_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -441,6 +509,53 @@ async def receive_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("⚠️ Failed to save your wallet address.")
         return
 
+    if pending_hash_edits.get(user_id):
+        del pending_hash_edits[user_id]
+
+        # Solana signatures are base58: digits + upper/lowercase letters, excluding 0, O, I, l
+        BASE58_RE = re.compile(r'^[1-9A-HJ-NP-Za-km-z]{87,88}$')
+
+        if not BASE58_RE.match(message.strip()):
+            await update.message.reply_text("⚠️ That doesn't look like a valid Solana transaction hash.")
+            return
+
+        try:
+            with SessionLocal() as session:
+                with SessionLocal() as session:
+                    res = session.execute(select(User).where(User.id == update.effective_user.id))
+                    user: User = res.scalar_one_or_none()
+                    # Fast existence check
+                    exists = session.execute(
+                        select(TransactionSignature.id).where(
+                            TransactionSignature.user_id == user.id,
+                            TransactionSignature.signature == message
+                        )
+                    ).first()
+                    if exists:
+                        raise Exception("Transaction already exists")  # already recorded
+                    if user is not None and check_transaction(message):
+                        tx = TransactionSignature(
+                            user_id=user.id,
+                            signature=message
+                        )
+                        session.add(tx)
+                        user.subscribed_expiry_at = _now() + datetime.timedelta(31)
+                        user.is_subscribed = True
+                        session.commit()
+                        referral_user = session.execute(
+                            select(User.id).where(
+                                User.referral_id == user.referral_idTransactionSignature.signature == message
+                            )
+                        ).first()
+                        if referral_user:
+                            payout_referral(referral_user)
+                        await update.message.reply_text("✅ Your transaction was checked successfully.")
+                    else:
+                        await update.message.reply_text("⚠️ Failed to check transaction.")
+        except Exception as e:
+            logging.exception(f"Failed to check transaction {message}: {e}")
+            await update.message.reply_text("⚠️ Failed to check transaction.")
+        return
     # --- No context found ---
     await update.message.reply_text("ℹ️ No pending action. Use a command or button to start editing.")
 
@@ -453,6 +568,16 @@ async def edit_wallet_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     pending_profile_edits[user_id] = True
 
     await query.message.reply_text("✍️ Send your new wallet address (Solana):")
+
+
+async def edit_hash_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = update.effective_user.id
+    pending_hash_edits[user_id] = True
+
+    await query.message.reply_text("✍️ Send transaction hash (Solana):")
 
 
 async def main():
@@ -470,7 +595,7 @@ async def main():
 
     # Callback query handlers
     bot_app.add_handler(CallbackQueryHandler(edit_wallet_callback, pattern=r"^edit_wallet$"))
-
+    bot_app.add_handler(CallbackQueryHandler(edit_hash_callback, pattern=r"^edit_hash$"))
     # Message handler
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_text_input))
     bot_app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, on_member_left))
