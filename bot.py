@@ -27,7 +27,7 @@ from telegram.ext import (
 )
 from websockets import ConnectionClosedError, WebSocketException
 
-from dbase import Base, User, TransactionSignature
+from dbase import Base, User, TransactionSignature, ReferralPayment
 
 # -------------------------------
 # ✅ Logging Configuration
@@ -418,7 +418,7 @@ async def membership_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 message = f"🤖 *Your membership is: {subscription} is expiry {expiry} *\n\n"
             else:
                 message = f"""🤖 *Your membership is: {subscription} is expired *\n
-💰 Pay 0.01 SOL fee for monthly subscription
+💰 Pay {EXPECTED_SOL} SOL fee for monthly subscription
 to: *{WALLET_ADDRESS}*"""
                 keyboard = InlineKeyboardMarkup([
                     [InlineKeyboardButton("✏️ Enter your Transaction Hash", callback_data=f"edit_hash")]
@@ -434,13 +434,24 @@ async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         res = session.execute(select(User).where(User.id == update.effective_user.id))
         user: User = res.scalar_one_or_none()
 
+        earned = 0
+        un_payments = session.execute(select(User)
+            .where(ReferralPayment.user_id == update.effective_user.id)) \
+            .where(ReferralPayment.payment_datetime is None) \
+            .scalars()
+
+        for payment in un_payments:
+            earned = earned + payment.amount_lamports
+
         if user is not None:
-            help_text = f"""🤖 *Referral program*\n\n*Your wallet: {user.wallet_address}*
-            Our referral program pays you 25% of each subscription registered upon your link.
+            help_text = f"""🤖 *Settings*\n\n*Your wallet: {user.wallet_address}*
+Our referral program pays you 25% of each subscription registered upon your link.
+You have earned: *{earned} SOL*            
             \n"""
 
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✏️ Edit Your SOL Wallet", callback_data=f"edit_wallet")]
+                [InlineKeyboardButton("✏️ Edit Your SOL Wallet", callback_data=f"edit_wallet")],
+                [InlineKeyboardButton(f"✏️ Claim {earned} SOL", callback_data=f"claim")]
             ])
 
             await update.message.reply_text(help_text, parse_mode="Markdown", reply_markup=keyboard)
@@ -477,9 +488,15 @@ def check_transaction(signature):
     return ok
 
 
-def payout_referral(referral_user):
-    pass
-
+def payout_referral(referral_user: User, referred_user: User):
+    with SessionLocal() as session:
+        payment = ReferralPayment(
+            user_id=referral_user.id,
+            referred_user_id=referred_user.id,
+            amount_lamports=REFERRAL_LAMPORTS
+        )
+        session.add(payment)
+        session.commit()
 
 async def receive_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -544,11 +561,11 @@ async def receive_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         session.commit()
                         referral_user = session.execute(
                             select(User.id).where(
-                                User.referral_id == user.referral_idTransactionSignature.signature == message
+                                User.referral_id == user.referral_id
                             )
                         ).first()
                         if referral_user:
-                            payout_referral(referral_user)
+                            payout_referral(referral_user, user)
                         await update.message.reply_text("✅ Your transaction was checked successfully.")
                     else:
                         await update.message.reply_text("⚠️ Failed to check transaction.")
