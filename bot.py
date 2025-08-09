@@ -1,0 +1,509 @@
+import asyncio
+import datetime
+import json
+import logging
+import os
+import re
+
+import dotenv
+import requests
+import websockets
+from sqlalchemy import create_engine
+from sqlalchemy import delete, select
+from sqlalchemy.orm import sessionmaker, Session
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram._botcommand import BotCommand
+from telegram._botcommandscope import BotCommandScopeDefault
+from telegram.constants import ChatMemberStatus
+from telegram.error import TelegramError
+from telegram.ext import CallbackQueryHandler
+from telegram.ext import CommandHandler, ChatMemberHandler
+from telegram.ext import (
+    ContextTypes,
+    MessageHandler,
+    filters,
+    Application,
+)
+from websockets import ConnectionClosedError, WebSocketException
+
+from dbase import Base, User
+
+# -------------------------------
+# ✅ Logging Configuration
+# -------------------------------
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    level=logging.WARNING,
+)
+logger = logging.getLogger("bottito")
+
+# -------------------------------
+# ✅ Load .env and setup
+# -------------------------------
+if not dotenv.load_dotenv():
+    logger.warning(".env file not found or could not be loaded.")
+
+MORALIS_API_KEY = os.getenv("MORALIS_API_KEY")  # Set this in your environment
+HEADERS = {
+    "accept": "application/json",
+    "X-API-Key": MORALIS_API_KEY,
+}
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
+WALLET_PK = os.getenv("WALLET_PK")
+
+if not BOT_TOKEN:
+    raise RuntimeError("Missing BOT_TOKEN")
+
+bot_app = Application.builder().token(BOT_TOKEN).build()
+
+# -------------------------------
+# ✅ Database setup
+# -------------------------------
+DATABASE_URL = f"mysql+mysqlconnector://{os.getenv('MYSQL_USER')}:{os.getenv('MYSQL_PASSWORD')}@{os.getenv('MYSQL_HOST')}/{os.getenv('MYSQL_DATABASE')}"
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base.metadata.create_all(engine)
+
+
+async def on_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.left_chat_member:
+        return
+
+    left_user = update.message.left_chat_member
+    if left_user.is_bot:
+        return
+
+    async with SessionLocal() as session:
+        await session.execute(delete(User).where(User.id == left_user.id))
+        await session.commit()
+
+    logger.warning(f"🗑 Removed user {left_user.id} from database (left {update.effective_chat.id})")
+
+
+def _btns_for_token(mint: str, telegram_url: str | None, links: dict | None) -> InlineKeyboardMarkup:
+    links = links or {}
+    btns = []
+
+    # Always useful
+    btn_row = [InlineKeyboardButton("View on Pump.fun", url=f"https://pump.fun/{mint}")]
+    # Add Dexscreener (Solana)
+    btn_row.append(InlineKeyboardButton("Dexscreener", url=f"https://dexscreener.com/solana/{mint}"))
+    btns.append(btn_row)
+
+    row2 = []
+    tg_link = telegram_url or links.get("telegram")
+    if tg_link:
+        row2.append(InlineKeyboardButton("Telegram", url=tg_link))
+
+    if links.get("website"):
+        row2.append(InlineKeyboardButton("Website", url=links["website"]))
+
+    if links.get("twitter"):
+        row2.append(InlineKeyboardButton("Twitter/X", url=links["twitter"]))
+
+    if row2:
+        btns.append(row2)
+
+    return InlineKeyboardMarkup(btns)
+
+
+def _build_caption_html(mint: str, metas: dict, telegram_url: str | None) -> str:
+    name = metas.get("name") or "Unknown"
+    symbol = metas.get("symbol") or ""
+    desc = metas.get("description") or ""
+    links = metas.get("links") or {}
+    fdv = metas.get("fullyDilutedValue")
+    decimals = metas.get("decimals")
+
+    parts = []
+    title = f"<b>{name}</b>" + (f" <i>({symbol})</i>" if symbol else "")
+    parts.append(title)
+    parts.append(f"<b>Mint:</b> <code>{mint}</code>")
+    if decimals is not None:
+        parts.append(f"<b>Decimals:</b> {decimals}")
+    if fdv:
+        parts.append(f"<b>FDV:</b> {fdv}")
+    # prefer explicit telegram parameter over links.telegram
+    tg = telegram_url or links.get("telegram")
+    if tg:
+        parts.append(f"<b>Dev Contact:</b> {tg}")
+    if desc:
+        # keep it short-ish
+        short = (desc[:280] + "…") if len(desc) > 300 else desc
+        parts.append(f"\n{short}")
+
+    parts.append("\n<b>Offer:</b> We sent a promo offer (600 USD) to the dev/channel owner.")
+    return "\n".join(parts)
+
+
+async def send_token_notice(user: User, mint_address: str, telegram: str | None, metas: dict):
+    """
+    Sends a rich notification to a user about a new token.
+    - Photo: metas['logo'] (if present)
+    - Caption: HTML-formatted with key info
+    - Buttons: Pump.fun, Dexscreener, Telegram/Website/Twitter (when available)
+    """
+    # Extract fields from Moralis metadata
+    logo = metas.get("logo")
+    links = metas.get("links") or {}
+    caption = _build_caption_html(mint_address, metas, telegram)
+    keyboard = _btns_for_token(mint_address, telegram, links)
+
+    try:
+        if logo:
+            # Send as photo with caption
+            await bot_app.bot.send_photo(
+                chat_id=user.id,
+                photo=logo,
+                caption=caption,
+                reply_markup=keyboard,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        else:
+            # Fallback: no image available
+            await bot_app.bot.send_message(
+                chat_id=user.id,
+                text=caption,
+                reply_markup=keyboard,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        # Optionally mark offer sent in DB here (if you pass a session or have a repo layer)
+        # user.offer_sent = True
+        # session.add(user); session.commit()
+
+    except TelegramError as e:
+        # Final fallback: try plain text without keyboard if something goes wrong
+        try:
+            await bot_app.bot.send_message(
+                chat_id=user.id,
+                text=f"{caption}\n\n(⚠️ Send error: {e})",
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception as inner:
+            logger.exception(f"[!] Failed to notify user {user.id}: {inner}")
+
+
+async def send_token(mint_address: str, telegram: str, metas: dict):
+    with SessionLocal() as session:
+        trial_users = session.execute(
+            select(User)
+            .where(User.is_subscribed is False)
+        ).scalars().all()
+
+        subscribed_users = session.execute(
+            select(User)
+            .where(User.is_subscribed is True)
+            .where(User.subscribed_expiry_at >= _now())
+        ).scalars().all()
+
+        for user in [trial_users + subscribed_users]:
+            await send_token_notice(user, mint_address, telegram, metas)
+    logger.warning(f"Token {mint_address} sent")
+
+
+async def process_token(mint_address: str):
+    await asyncio.sleep(60 * 15)
+    meta = await get_token_metadata(mint_address)
+    if meta is not None:
+        telegram = get_telegram_from_metas(meta)
+        if telegram is not None and "https://t.me/" in str(telegram):
+            await send_token(mint_address, telegram, meta)
+
+
+def get_telegram_from_metas(data):
+    # ✅ Check for Telegram link in the 'links' field
+    links = data.get("links", {})
+    telegram = links.get("telegram")
+    if telegram:
+        return telegram
+
+    # 🔄 Fallback: Check metadata URI if exists
+    uri = data.get("metaplex", {}).get("metadataUri")
+    if uri:
+        try:
+            meta_res = requests.get(uri)
+            meta = meta_res.json()
+            if "t.me/" in str(meta):
+                match = re.search(r"https?://t\.me/\S+", str(meta))
+                if match:
+                    return match.group()
+        except Exception as e:
+            pass
+    return None
+
+
+async def get_token_metadata(mint_address: str):
+    url = f"https://solana-gateway.moralis.io/token/mainnet/{mint_address}/metadata"
+
+    try:
+        response = requests.get(url, headers=HEADERS)
+        if response.status_code != 200:
+            return None
+
+        return response.json()
+    except Exception as e:
+        return None
+
+
+# 🌍 Global commands for all users (DM with bot)
+default_commands = [
+    BotCommand("start", "Start interacting with the bot"),
+    BotCommand("faq", "How does it works"),
+    BotCommand("membership", "Manage your subscription"),
+    BotCommand("referral", "Referral program settings"),
+    BotCommand("link", "Your referral link"),
+]
+
+
+def _now():
+    return datetime.datetime.now(datetime.UTC)
+
+
+# Fires when user starts/unblocks (bot becomes MEMBER) or blocks (bot becomes KICKED) in PRIVATE
+async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cmu = update.my_chat_member
+    chat = cmu.chat
+    if chat.type != "private":
+        return
+
+    old_status = cmu.old_chat_member.status
+    new_status = cmu.new_chat_member.status
+
+    # User started/unblocked bot
+    if old_status == ChatMemberStatus.LEFT and new_status == ChatMemberStatus.MEMBER:
+        with SessionLocal() as session:
+            upsert_user_private(session, tg_user=cmu.from_user, private_chat_id=chat.id)
+            session.commit()
+        await context.bot.send_message(chat_id=chat.id, text="✅ Registered again.")
+
+    # User blocked bot
+    if new_status == ChatMemberStatus.LEFT:
+        with SessionLocal() as session:
+            session.execute(delete(User).where(User.id == chat.id))
+            session.commit()
+
+
+def upsert_user_private(session: Session, *, tg_user, private_chat_id: int, referral_id: int = None) -> User:
+    res = session.execute(select(User).where(User.chat_id == private_chat_id))
+    user = res.scalar_one_or_none()
+
+    if user is None:
+        user = User(
+            id=tg_user.id,
+            username=getattr(tg_user, "username", None),
+            first_name=getattr(tg_user, "first_name", None),
+            last_name=getattr(tg_user, "last_name", None),
+            chat_id=private_chat_id,  # DM chat id (same as user id in private)
+            is_subscribed=False,
+            wallet_address="",  # default
+            created_at=_now(),
+            referral_id=referral_id,
+            subscribed_expiry_at=_now() + datetime.timedelta(14)
+        )
+        session.add(user)
+    else:
+        logger.exception(f"User {tg_user.id} already exists")
+    return user
+
+
+async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = f"🤖 *https://t.me/bottito_search_bot?start={update.effective_user.id}*\n\n"
+
+    await update.message.reply_text(message, parse_mode="Markdown")
+
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    commands = [
+        ("start", "Start interacting with the bot"),
+        ("faq", "How does it works"),
+        ("membership", "Manage your subscription"),
+        ("referral", "Referral program settings"),
+        ("link", "Your referral link"),
+    ]
+
+    message = "🤖 *Welcome! Here’s what I can do:*\n\n"
+    for cmd, desc in commands:
+        message += f"{cmd} — {desc}\n"
+
+    await update.message.reply_text(message, parse_mode="Markdown")
+
+    if update.effective_chat.type != "private":
+        return
+
+    ref = " ".join(context.args) if context.args else None
+    referral_id = None
+    if ref is not None and int(ref) != update.effective_user.id:
+        referral_id = int(ref)
+
+    with SessionLocal() as session:
+        upsert_user_private(
+            session,
+            tg_user=update.effective_user,
+            private_chat_id=update.effective_chat.id,
+            referral_id=referral_id
+        )
+        session.commit()
+    await update.message.reply_text("✅ Registered via /start.")
+
+
+async def faq_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = (
+        "🤖 *FAQ* - How does it work?\n\n"
+        "Welcome! Here’s how our bot helps you:\n\n"
+        "1️⃣ *Token Detection*: The bot monitors new Pump.fun, Raydium and Jupiter token launches in real-time.\n"
+        "2️⃣ *Metadata Scanning*: We fetch token details (name, mint address, Telegram link).\n"
+        "3️⃣ *Contacting Devs*: If a Telegram is found, we send you token info in this chat.\n"
+        "💡 *Tip*: To receive alerts, make sure you’ve started the bot and allowed messages.\n"
+        "📌 *Note*: Some Telegram users must message the bot first before it can DM them.\n"
+    )
+
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
+
+async def membership_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    with SessionLocal() as session:
+        res = session.execute(select(User).where(User.id == update.effective_user.id))
+        user: User = res.scalar_one_or_none()
+
+        if user is not None:
+            if user.is_subscribed:
+                subscription = "Premium"
+            else:
+                subscription = "Trial"
+
+            expiry = str(user.subscribed_expiry_at)
+
+            reply_keyboard = None
+
+            if user.subscribed_expiry_at > _now():
+                message = f"🤖 *Your membership is: {subscription} is expiry {expiry} *\n\n"
+            else:
+                message = f"🤖 *Your membership is: {subscription} is expired *\n\n"
+                reply_keyboard = InlineKeyboardButton("💰 Pay 0.1 SOL for monthly subscription",
+                                                      url=f"https://phantom.app/ul/send?recipient={WALLET_ADDRESS}&amount=0.1&reference={user.id}&label=Subscription&message=Bottito%20Search%20Bot%20monthly%20subsciption")
+
+        await update.message.reply_text(message, parse_mode="Markdown", reply_markup=reply_keyboard)
+    else:
+    await update.message.reply_text(f"🤖 * Call /start first to register *\n", parse_mode="Markdown")
+
+
+async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    with SessionLocal() as session:
+        res = session.execute(select(User).where(User.id == update.effective_user.id))
+        user: User = res.scalar_one_or_none()
+
+        if user is not None:
+            help_text = f"""🤖 *Settings*\n\n*Your wallet: {user.wallet_address}*\n"""
+
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✏️ Edit Your SOL Wallet", callback_data=f"edit_wallet")]
+            ])
+
+            await update.message.reply_text(help_text, parse_mode="Markdown", reply_markup=keyboard)
+        else:
+            await update.message.reply_text(f"🤖 * Call /start first to register *\n", parse_mode="Markdown")
+
+
+pending_profile_edits = {}
+
+
+async def receive_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    message = update.message.text.strip()
+    bot_id = str(context.bot.id)
+
+    # --- Wallet Editing ---
+    if pending_profile_edits.get(user_id):
+        del pending_profile_edits[user_id]
+
+        if len(message) < 25:
+            await update.message.reply_text("⚠️ That doesn't look like a valid wallet address.")
+            return
+
+        try:
+            with SessionLocal() as session:
+                with SessionLocal() as session:
+                    res = session.execute(select(User).where(User.id == update.effective_user.id))
+                    user: User = res.scalar_one_or_none()
+
+                    if user is not None:
+                        user.wallet_address = message
+                        session.commit()
+            await update.message.reply_text("✅ Your wallet address has been updated.")
+        except Exception as e:
+            logging.exception("Failed to update wallet")
+            await update.message.reply_text("⚠️ Failed to save your wallet address.")
+        return
+
+    # --- No context found ---
+    await update.message.reply_text("ℹ️ No pending action. Use a command or button to start editing.")
+
+
+async def edit_wallet_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = update.effective_user.id
+    pending_profile_edits[user_id] = True
+
+    await query.message.reply_text("✍️ Send your new wallet address (Solana):")
+
+
+async def main():
+    uri = "wss://pumpportal.fun/api/data"
+
+    # Set default commands
+    await bot_app.bot.set_my_commands(default_commands, scope=BotCommandScopeDefault())
+
+    # Register command handlers
+    bot_app.add_handler(CommandHandler("start", start_command))
+    bot_app.add_handler(CommandHandler("faq", faq_command))
+    bot_app.add_handler(CommandHandler("membership", membership_command))
+    bot_app.add_handler(CommandHandler("referral", referral_command))
+    bot_app.add_handler(CommandHandler("link", link_command))
+
+    # Callback query handlers
+    bot_app.add_handler(CallbackQueryHandler(edit_wallet_callback, pattern=r"^edit_wallet$"))
+
+    # Message handler
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_text_input))
+    bot_app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, on_member_left))
+    bot_app.add_handler(ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
+    # Initialize and start bot polling
+    await bot_app.initialize()
+    await bot_app.start()
+    await bot_app.updater.start_polling()
+    logger.warning("🤖 Telegram bot started.")
+
+    while True:
+        try:
+            async with websockets.connect(uri, ping_interval=20, ping_timeout=10) as ws:
+                await ws.send(json.dumps({"method": "subscribeNewToken"}))
+                logger.warning("✅ Subscribed to PumpPortal...")
+
+                async for message in ws:
+                    try:
+                        data = json.loads(message)
+                        mint = data.get("mint")
+                        if mint:
+                            asyncio.create_task(process_token(mint))
+                    except Exception as e:
+                        logger.exception(f"⚠️ Error processing message: {e}")
+
+        except ConnectionClosedError as e:
+            logger.exception(f"🔌 Connection closed unexpectedly: {e}. Retrying in 5s...")
+            await asyncio.sleep(5)
+        except WebSocketException as e:
+            logger.exception(f"❗ WebSocket exception: {e}. Retrying in 5s...")
+            await asyncio.sleep(5)
+        except Exception as e:
+            logger.exception(f"🔥 Unexpected error: {e}. Retrying in 5s...")
+            await asyncio.sleep(5)
+
+
+asyncio.run(main())

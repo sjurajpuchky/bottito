@@ -1,4 +1,4 @@
-#!/home/jpuchky/workspace/python-apps/bottito/venv/bin/python
+#!/home/jpuchky/workspace/python-apps/bottito/venv/bin/python3.12
 # -*- coding: utf-8 -*-
 import re
 import sys
