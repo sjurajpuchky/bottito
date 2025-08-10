@@ -653,12 +653,17 @@ async def claim_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             for payment in un_payments:
                 earned = earned + payment.amount_lamports
-                payment.payment_datetime=_now()
-                session.commit()
+
             try:
-                tx_hash = await send_transaction(user.wallet_address, earned)
-                earned = round(Decimal(earned / 1_000_000_000), 9)
-                await query.message.reply_text(f"✅ Transaction sent {tx_hash} {earned} SOL.")
+                if user.wallet_address != "":
+                    tx_hash = await send_transaction(user.wallet_address, earned)
+                    for payment in un_payments:
+                        payment.payment_datetime = _now()
+                        session.commit()
+                    earned_x = round(Decimal(earned / 1_000_000_000), 9)
+                    await query.message.reply_text(f"✅ Transaction sent {tx_hash} {earned_x} SOL.")
+                else:
+                    await query.message.reply_text(f"✍ You have to set your Wallet Address")
             except ValueError as e:
                 await query.message.reply_text(f"✍ Error sending transaction: {e}")
         else:
