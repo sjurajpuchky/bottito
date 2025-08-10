@@ -325,9 +325,9 @@ def upsert_user_private(session: Session, *, tg_user, private_chat_id: int, refe
     if user is None:
         user = User(
             id=tg_user.id,
-            username=getattr(tg_user, "username", None),
-            first_name=getattr(tg_user, "first_name", None),
-            last_name=getattr(tg_user, "last_name", None),
+            username=str(getattr(tg_user, "username", None)).encode("ascii", "ignore").decode(),
+            first_name=str(getattr(tg_user, "first_name", None)).encode("ascii", "ignore").decode(),
+            last_name=str(getattr(tg_user, "last_name", None)).encode("ascii", "ignore").decode(),
             chat_id=private_chat_id,  # DM chat id (same as user id in private)
             is_subscribed=False,
             wallet_address="",  # default
