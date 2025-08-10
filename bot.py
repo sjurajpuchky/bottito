@@ -291,7 +291,7 @@ default_commands = [
 
 
 def _now():
-    return datetime.datetime.now(datetime.UTC)
+    return datetime.datetime.utcnow()
 
 
 # Fires when user starts/unblocks (bot becomes MEMBER) or blocks (bot becomes KICKED) in PRIVATE
