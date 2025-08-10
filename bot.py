@@ -175,7 +175,6 @@ def _build_caption_html(mint: str, metas: dict, telegram_url: str | None) -> str
         short = (desc[:280] + "…") if len(desc) > 300 else desc
         parts.append(f"\n{short}")
 
-    parts.append("\n<b>Offer:</b> We sent a promo offer (600 USD) to the dev/channel owner.")
     return "\n".join(parts)
 
 
