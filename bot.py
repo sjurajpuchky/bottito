@@ -200,8 +200,7 @@ async def send_token_notice(user: User, mint_address: str, telegram: str | None,
                 photo=logo,
                 caption=caption,
                 reply_markup=keyboard,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
+                parse_mode="HTML"
             )
             logger.warning(f"Token {mint_address} sent to {user.chat_id}")
         else:
@@ -210,8 +209,7 @@ async def send_token_notice(user: User, mint_address: str, telegram: str | None,
                 chat_id=user.id,
                 text=caption,
                 reply_markup=keyboard,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
+                parse_mode="HTML"
             )
             logger.warning(f"Token {mint_address} sent to {user.chat_id}")
     except TelegramError as e:
