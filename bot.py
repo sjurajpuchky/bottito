@@ -222,12 +222,12 @@ async def send_token(mint_address: str, telegram: str, metas: dict):
     with SessionLocal() as session:
         trial_users = session.execute(
             select(User)
-            .where(User.is_subscribed is False)
+            .where(User.is_subscribed == False)
         ).scalars().all()
 
         subscribed_users = session.execute(
             select(User)
-            .where(User.is_subscribed is True)
+            .where(User.is_subscribed == True)
             .where(User.subscribed_expiry_at >= _now())
         ).scalars().all()
 
@@ -244,7 +244,6 @@ async def process_token(mint_address: str):
     meta = get_token_metadata(mint_address)
     if meta is not None:
         telegram = get_telegram_from_metas(meta)
-        print(meta)
         await send_token(mint_address, telegram, meta)
 
 
