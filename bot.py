@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import datetime
 import json
 import logging
@@ -8,11 +7,14 @@ import re
 from _decimal import Decimal
 
 import dotenv
-import httpx as httpx
 import requests
 import websockets
+from solana.rpc.api import Client
+from solders.keypair import Keypair
+from solders.message import MessageV0
 from solders.pubkey import Pubkey
-from solders.solders import Keypair, transfer, VersionedTransaction, Hash, MessageV0
+from solders.system_program import TransferParams, transfer
+from solders.transaction import VersionedTransaction
 from sqlalchemy import create_engine
 from sqlalchemy import delete, select
 from sqlalchemy.orm import sessionmaker, Session
@@ -60,7 +62,7 @@ SOLANA_HTTP = os.getenv("SOLANA_HTTP")
 WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
 WALLET_PK = os.getenv("WALLET_PK")
 
-EXPECTED_SOL = Decimal("0.001")  # 0.01 SOL
+EXPECTED_SOL = Decimal("0.02")
 REFERRAL_LAMPORTS = int(EXPECTED_SOL * Decimal("0.25") * Decimal(1_000_000_000))
 EXPECTED_LAMPORTS = int(EXPECTED_SOL * Decimal(1_000_000_000))
 SYSTEM_PROGRAM = "11111111111111111111111111111111"
@@ -201,6 +203,7 @@ async def send_token_notice(user: User, mint_address: str, telegram: str | None,
                 parse_mode="HTML",
                 disable_web_page_preview=True,
             )
+            logger.warning(f"Token {mint_address} sent to {user.chat_id}")
         else:
             # Fallback: no image available
             await bot_app.bot.send_message(
@@ -210,21 +213,9 @@ async def send_token_notice(user: User, mint_address: str, telegram: str | None,
                 parse_mode="HTML",
                 disable_web_page_preview=True,
             )
-        # Optionally mark offer sent in DB here (if you pass a session or have a repo layer)
-        # user.offer_sent = True
-        # session.add(user); session.commit()
-
+            logger.warning(f"Token {mint_address} sent to {user.chat_id}")
     except TelegramError as e:
-        # Final fallback: try plain text without keyboard if something goes wrong
-        try:
-            await bot_app.bot.send_message(
-                chat_id=user.id,
-                text=f"{caption}\n\n(⚠️ Send error: {e})",
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
-        except Exception as inner:
-            logger.exception(f"[!] Failed to notify user {user.id}: {inner}")
+        logger.exception(f"[!] Failed to notify user {user.id}: {e}")
 
 
 async def send_token(mint_address: str, telegram: str, metas: dict):
@@ -240,18 +231,21 @@ async def send_token(mint_address: str, telegram: str, metas: dict):
             .where(User.subscribed_expiry_at >= _now())
         ).scalars().all()
 
-        for user in [trial_users + subscribed_users]:
+        for user in trial_users + subscribed_users:
+            logger.warning(f"Token {mint_address} sending to {user.chat_id}")
             await send_token_notice(user, mint_address, telegram, metas)
-    logger.warning(f"Token {mint_address} sent")
+
+
+
 
 
 async def process_token(mint_address: str):
-    await asyncio.sleep(60 * 15)
-    meta = await get_token_metadata(mint_address)
+    await asyncio.sleep(60)
+    meta = get_token_metadata(mint_address)
     if meta is not None:
         telegram = get_telegram_from_metas(meta)
-        if telegram is not None and "https://t.me/" in str(telegram):
-            await send_token(mint_address, telegram, meta)
+        print(meta)
+        await send_token(mint_address, telegram, meta)
 
 
 def get_telegram_from_metas(data):
@@ -276,7 +270,7 @@ def get_telegram_from_metas(data):
     return None
 
 
-async def get_token_metadata(mint_address: str):
+def get_token_metadata(mint_address: str):
     url = f"https://solana-gateway.moralis.io/token/mainnet/{mint_address}/metadata"
 
     try:
@@ -607,40 +601,40 @@ def load_payer() -> Keypair:
     return Keypair.from_base58_string(WALLET_PK)
 
 
-async def rpc(method: str, params: list):
-    async with httpx.AsyncClient(timeout=20) as client:
-        res = await client.post(SOLANA_HTTP, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
-        res.raise_for_status()
-        data = res.json()
-        if "error" in data:
-            raise RuntimeError(data["error"])
-        return data["result"]
 
 
 async def send_transaction(recipient: str, lamports: int) -> str:
-    if lamports <= 0:
-        raise ValueError("lamports must be > 0")
+    client: Client = Client(SOLANA_HTTP)
+    rent_min = client.get_minimum_balance_for_rent_exemption(0).value
 
-    payer = load_payer()
-    to_pk = Pubkey.from_string(recipient)
+    if lamports <= rent_min:
+        raise ValueError(f"lamports must be > {rent_min}")
 
-    # 1) Get latest blockhash
-    lbh = await rpc("getLatestBlockhash", [{"commitment": "finalized"}])
-    blockhash = Hash.from_string(lbh["value"]["blockhash"])
+    sender = load_payer()
+    receiver = Pubkey.from_string(recipient)
 
-    # 2) Build transfer instruction (no TransferParams in 0.26)
-    ix = transfer(payer.pubkey(), to_pk, lamports)
+    ix = transfer(TransferParams(
+        from_pubkey=sender.pubkey(),
+        to_pubkey=receiver,
+        lamports=lamports
+    ))
 
-    # 3) Compile v0 message (no LUTs)
-    msg = MessageV0.try_compile(payer.pubkey(), [ix], [], blockhash)
+    # 3) Fetch a fresh recent blockhash and convert to solders.Hash
+    lb = client.get_latest_blockhash().value  # has blockhash + lastValidBlockHeight
+    # 4) Compile a v0 message (fills the "message")
+    msg = MessageV0.try_compile(
+        payer=sender.pubkey(),
+        instructions=[ix],
+        address_lookup_table_accounts=[],
+        recent_blockhash=lb.blockhash,
+    )
 
-    # 4) Sign versioned transaction
-    vtx = VersionedTransaction(msg, [payer])
+    # 5) Create + sign a VersionedTransaction (fills the "from_keypairs")
+    tx = VersionedTransaction(msg, [sender])
 
-    # 5) Send via RPC
-    tx_b64 = base64.b64encode(bytes(vtx)).decode()
-    sig = await rpc("sendTransaction", [tx_b64, {"encoding": "base64", "skipPreflight": False}])
-    return sig
+    # 6) Send (either raw bytes, or pass the object — raw is the safest)
+    sig = client.send_raw_transaction(bytes(tx)).value
+    return str(sig)
 
 
 async def claim_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -662,10 +656,14 @@ async def claim_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             for payment in un_payments:
                 earned = earned + payment.amount_lamports
-
-            tx_hash = await send_transaction(user.wallet_address, earned)
-            earned = round(Decimal(earned / 1_000_000_000), 9)
-            await query.message.reply_text(f"✅ Transaction sent {tx_hash} {earned} SOL.")
+                payment.payment_datetime=_now()
+                session.commit()
+            try:
+                tx_hash = await send_transaction(user.wallet_address, earned)
+                earned = round(Decimal(earned / 1_000_000_000), 9)
+                await query.message.reply_text(f"✅ Transaction sent {tx_hash} {earned} SOL.")
+            except ValueError as e:
+                await query.message.reply_text(f"✍ Error sending transaction: {e}")
         else:
             await query.message.reply_text("✍️ You does not have configured your Wallet Address yet.")
 
