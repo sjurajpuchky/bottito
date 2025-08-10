@@ -238,7 +238,7 @@ async def send_token(mint_address: str, telegram: str, metas: dict):
 
 
 async def process_token(mint_address: str):
-    await asyncio.sleep(60)
+    await asyncio.sleep(60*5)
     meta = get_token_metadata(mint_address)
     if meta is not None:
         telegram = get_telegram_from_metas(meta)
