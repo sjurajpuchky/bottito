@@ -378,7 +378,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             referral_id=referral_id
         )
         session.commit()
-    await update.message.reply_text("✅ Registered via /start.")
+        await update.message.reply_text("✅ Registered via /start.")
 
 
 async def faq_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
