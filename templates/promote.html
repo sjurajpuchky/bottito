@@ -7,7 +7,7 @@
         <div class="card-body">
           <h5 class="card-title mb-3">Promote {{ mint }}</h5>
 
-          <form method="post">
+          <form method="post" action="/submit_promotion">
             <!-- Mint (read-only) -->
             <div class="mb-3">
               <label for="mint" class="form-label">Token mint</label>
@@ -69,4 +69,20 @@
     </div>
   </div>
 </div>
+<!-- TinyMCE CDN -->
+<script src="https://cdn.jsdelivr.net/npm/tinymce@7/tinymce.min.js" referrerpolicy="origin"></script>
+<script>
+  tinymce.init({
+    selector: '#caption',
+    menubar: false,
+    branding: false,
+    height: 280,
+    plugins: 'link lists',
+    toolbar: 'undo redo | bold italic underline | bullist numlist | link removeformat',
+    default_link_target: '_blank',
+    // Optional: restrict allowed tags a bit
+    valid_elements: 'p,br,strong/b,em/i,u,ul,ol,li,a[href|target=_blank]',
+    convert_urls: false
+  });
+</script>
 {% endblock %}

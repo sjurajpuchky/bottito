@@ -389,12 +389,14 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cmu = update.my_chat_member
     chat = cmu.chat
 
+    logger.warning(f"{chat.title}: {chat.type}")
+
     if chat.type == "private":
         old_status = cmu.old_chat_member.status
         new_status = cmu.new_chat_member.status
 
         # User started/unblocked bot
-        if old_status == ChatMemberStatus.LEFT and new_status == ChatMemberStatus.MEMBER:
+        if new_status == ChatMemberStatus.MEMBER:
             with SessionLocal() as session:
                 upsert_user_private(session, tg_user=cmu.from_user, private_chat_id=chat.id)
                 session.commit()
@@ -403,53 +405,38 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # User blocked bot
         if new_status == ChatMemberStatus.LEFT:
             with SessionLocal() as session:
-                session.execute(delete(User).where(User.id == chat.id))
+                session.execute(delete(User).where(User.id == cmu.from_user.id))
                 session.commit()
-    else:
-        if chat.type == "channel":
-            chat = cmu.chat  # the channel
-            actor = cmu.from_user  # admin who added/removed the bot
-            old_status = cmu.old_chat_member.status
-            new_status = cmu.new_chat_member.status
 
-            # Upsert/delete channel entry keyed by (user_id, chat_id)
-            with SessionLocal() as session:
-                # Ensure the actor exists in users (FK target)
-                db_user = session.get(User, actor.id)
-                if not db_user:
-                    db_user = User(
-                        id=actor.id,
-                        username=actor.username,
-                        first_name=actor.first_name,
-                        last_name=actor.last_name,
-                        created_at=_now(),
+    if chat.type == "channel" or chat.type == "supergroup":
+        actor = cmu.from_user  # admin who added/removed the bot
+        old_status = cmu.old_chat_member.status
+        new_status = cmu.new_chat_member.status
+
+        # Upsert/delete channel entry keyed by (user_id, chat_id)
+        with SessionLocal() as session:
+            if new_status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER):
+                # upsert Channel
+                row = session.get(Channel, (actor.id, chat.id))  # composite PK order: (user_id, chat_id)
+                if row is None:
+                    row = Channel(user_id=actor.id, chat_id=chat.id, chat_name=chat.title)
+                    session.add(row)
+                else:
+                    row.chat_name = chat.title
+                session.commit()
+                await context.bot.send_message(chat_id=actor.id, text=f"✅ Bot has been registered to channel {chat.title}.")
+
+                # Optional: warn if no posting right
+                can_post = getattr(cmu.new_chat_member, "can_post_messages", True)
+                if not can_post:
+                    logger.warning(
+                        f"Bot lacks 'post messages' right in channel {chat.id} ({chat.title})"
                     )
-                    session.add(db_user)
-
-                if new_status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
-                    # upsert Channel
-                    row = session.get(Channel, (actor.id, chat.id))  # composite PK order: (user_id, chat_id)
-                    if row is None:
-                        row = Channel(user_id=actor.id, chat_id=chat.id, chat_name=chat.title)
-                        session.add(row)
-                    else:
-                        row.chat_name = chat.title
+            elif new_status in ("left", "kicked"):
+                row = session.get(Channel, (actor.id, chat.id))
+                if row:
+                    session.delete(row)
                     session.commit()
-
-                    # Optional: warn if no posting right
-                    can_post = getattr(cmu.new_chat_member, "can_post_messages", True)
-                    if not can_post:
-                        context.application.logger.warning(
-                            f"Bot lacks 'post messages' right in channel {chat.id} ({chat.title})"
-                        )
-
-                elif new_status in (ChatMemberStatus.LEFT, ChatMemberStatus.KICKED):
-                    row = session.get(Channel, (actor.id, chat.id))
-                    if row:
-                        session.delete(row)
-                        session.commit()
-
-
     return
 
 def upsert_user_private(session: Session, *, tg_user, private_chat_id: int, referral_id: int = None) -> User:
