@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container py-4">
+  <div class="row justify-content-center">
+    <div class="col-lg-7">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h5 class="card-title mb-3">Promote {{ mint }}</h5>
+
+          <form method="post">
+            <!-- Mint (read-only) -->
+            <div class="mb-3">
+              <label for="mint" class="form-label">Token mint</label>
+              <input type="text" class="form-control" id="mint" name="mint" value="{{ mint or '' }}" readonly>
+            </div>
+
+            <!-- Caption -->
+            <div class="mb-3">
+              <label for="caption" class="form-label">Caption</label>
+              <textarea class="form-control" id="caption" name="caption" rows="3">{{ caption or '' }}</textarea>
+            </div>
+
+            <!-- Logo URL -->
+            <div class="mb-3">
+              <label for="logo" class="form-label">Logo URL (optional)</label>
+              <input type="url" class="form-control" id="logo" name="logo" value="{{ logo or '' }}">
+            </div>
+
+            <!-- Promotion Buttons (Dynamic) -->
+            <h3 class="h5 mt-4">Promotion Buttons</h3>
+            {% if links %}
+              {% for label, href in links.items() %}
+                <div class="mb-3">
+                  <label for="{{ label }}" class="form-label">{{ label|capitalize }}</label>
+                  <input type="url" class="form-control" id="{{ label }}" name="links[{{ label }}]" value="{{ href or '' }}">
+                </div>
+              {% endfor %}
+            {% else %}
+              <p class="text-muted">No promotion links available.</p>
+            {% endif %}
+
+            <!-- Groups -->
+            <h3 class="h5 mt-4">Promote in Groups</h3>
+            <div class="mb-3">
+              {% for group_id, group_name in groups.items() %}
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox"
+                         id="group_{{ group_id }}"
+                         name="groups"
+                         value="{{ group_id }}"
+                         {% if selected_groups and group_id in selected_groups %}checked{% endif %}>
+                  <label class="form-check-label" for="group_{{ group_id }}">
+                    {{ group_name }}
+                  </label>
+                </div>
+              {% else %}
+                <p class="text-muted">No groups available.</p>
+              {% endfor %}
+            </div>
+
+            <!-- Submit -->
+            <div class="d-flex justify-content-center">
+              <button type="submit" class="btn btn-primary">Promote in Groups</button>
+            </div>
+          </form>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

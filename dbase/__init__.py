@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, BigInteger
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, BigInteger, PrimaryKeyConstraint
 from sqlalchemy.orm import relationship, declarative_base
 
 Base = declarative_base()
@@ -25,6 +25,7 @@ class User(Base):
     # Relationship to transactions
     transactions = relationship("TransactionSignature", back_populates="user", cascade="all, delete-orphan")
     referral_payments = relationship("ReferralPayment", back_populates="user", cascade="all, delete-orphan")
+    channels = relationship("Channel", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<User(id={self.id}, username={self.username})>"
@@ -68,3 +69,21 @@ class ReferralPayment(Base):
             f"referred_user_id={self.referred_user_id}, "
             f"amount_lamports={self.amount_lamports}, datetime={self.payment_datetime})>"
         )
+
+
+class Channel(Base):
+    __tablename__ = "channels"
+
+    user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    chat_id = Column(BigInteger, nullable=False)
+    chat_name = Column(String(250), nullable=True)
+
+    # Composite primary key
+    __table_args__ = (
+        PrimaryKeyConstraint('user_id', 'chat_id'),
+    )
+
+    user = relationship("User", back_populates="channels")
+
+    def __repr__(self):
+        return f"<Channel(user_id={self.user_id}, chat_id={self.chat_id})>"

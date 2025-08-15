@@ -9,6 +9,8 @@ from _decimal import Decimal
 import dotenv
 import requests
 import websockets
+from aiohttp import web
+from fernet import Fernet
 from solana.rpc.api import Client
 from solders.keypair import Keypair
 from solders.message import MessageV0
@@ -33,7 +35,7 @@ from telegram.ext import (
 )
 from websockets import ConnectionClosedError, WebSocketException
 
-from dbase import Base, User, TransactionSignature, ReferralPayment
+from dbase import Base, User, TransactionSignature, ReferralPayment, Channel
 
 # -------------------------------
 # ✅ Logging Configuration
@@ -55,17 +57,18 @@ HEADERS = {
     "accept": "application/json",
     "X-API-Key": MORALIS_API_KEY,
 }
-
+BASE_URL = os.getenv("BASE_URL")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SOLANA_WSS = os.getenv("SOLANA_WSS")
 SOLANA_HTTP = os.getenv("SOLANA_HTTP")
 WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
 WALLET_PK = os.getenv("WALLET_PK")
-
+SECRET_KEY = bytes(os.getenv("SECRET_KEY").encode("utf8"))
 EXPECTED_SOL = Decimal("0.2")
 REFERRAL_LAMPORTS = int(EXPECTED_SOL * Decimal("0.25") * Decimal(1_000_000_000))
 EXPECTED_LAMPORTS = int(EXPECTED_SOL * Decimal(1_000_000_000))
 SYSTEM_PROGRAM = "11111111111111111111111111111111"
+IPC_TOKEN = os.getenv("IPC_TOKEN")
 
 if not WALLET_ADDRESS:
     raise SystemExit("Set WALLET_ADDRESS env var.")
@@ -123,30 +126,117 @@ async def on_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.warning(f"🗑 Removed user {left_user.id} from database (left {update.effective_chat.id})")
 
 
-def _btns_for_token(mint: str, telegram_url: str | None, links: dict | None) -> InlineKeyboardMarkup:
+def generate_promote_link(user_id: str, mint: str, caption: str, logo: str | None, links: dict):
+    # Create encryption object
+    f = Fernet(SECRET_KEY)
+
+    # Prepare parameters
+    params = {
+        "mint": mint,
+        "caption": caption,
+        "logo": logo,
+        "links": links,
+        "user_id": user_id
+    }
+
+    # Convert to JSON string
+    json_data = json.dumps(params, separators=(",", ":"))
+
+    # Encrypt the JSON data
+    token = f.encrypt(json_data.encode()).decode()
+
+    # Create final URL
+    url = f"{BASE_URL}/create_promotion?data={token}"
+
+    return url
+
+
+async def _promote_to_chats(mint: str, caption: str, logo: str, telegram_url: str, links: dict,
+                            chat_ids: list[int | str]):
+    keyboard = _btns_for_token(mint, caption, logo, telegram_url, links, use_promote_button=False)
+
+    for chat_id in chat_ids:
+        try:
+            if logo:
+                await bot_app.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=logo,
+                    caption=caption,
+                    reply_markup=keyboard,
+                    parse_mode="HTML",
+                )
+            else:
+                await bot_app.bot.send_message(
+                    chat_id=chat_id,
+                    text=caption,
+                    reply_markup=keyboard,
+                    parse_mode="HTML",
+                )
+            logger.warning(f"[IPC] Posted token {mint} to {chat_id}")
+        except TelegramError as e:
+            logger.exception(f"[IPC] Failed posting to {chat_id}: {e}")
+
+
+async def ipc_post_handler(request: web.Request):
+    # Simple bearer token check
+    auth = request.headers.get("Authorization", "")
+    if not IPC_TOKEN or auth != f"Bearer {IPC_TOKEN}":
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+    try:
+        payload = await request.json()
+        # expected keys
+        mint = payload.get("mint") or ""
+        telegram_url = payload.get("telegram")  # optional
+        metas = payload.get("metas") or {}
+        logo = metas.get("logo")
+        caption = payload.get("caption")
+        chat_ids = payload.get("chat_ids") or []  # list of channel IDs or @usernames
+
+        if not mint or not metas or not chat_ids:
+            return web.json_response({"ok": False, "error": "mint/metas/chat_ids required"}, status=400)
+
+        # Fire and forget: post to chats
+        asyncio.create_task(_promote_to_chats(mint, caption, logo, telegram_url, metas.get('links') or {}, chat_ids))
+        return web.json_response({"ok": True})
+    except Exception as e:
+        logger.exception(f"[IPC] Bad request: {e}")
+        return web.json_response({"ok": False, "error": "bad_request"}, status=400)
+
+
+def _btns_for_token( mint: str, caption: str, logo: str | None, telegram_url: str | None,
+                    links: dict | None, use_promote_button=True, user_id="") -> InlineKeyboardMarkup:
     links = links or {}
     btns = []
+    link_links = dict()
 
     # Always useful
     btn_row = [InlineKeyboardButton("View on Pump.fun", url=f"https://pump.fun/{mint}")]
+    link_links["pumpfun"] = f"https://pump.fun/{mint}"
     # Add Dexscreener (Solana)
     btn_row.append(InlineKeyboardButton("Dexscreener", url=f"https://dexscreener.com/solana/{mint}"))
+    link_links["dexscreener"] = f"https://dexscreener.com/solana/{mint}"
     btns.append(btn_row)
 
     row2 = []
     tg_link = telegram_url or links.get("telegram")
     if tg_link:
         row2.append(InlineKeyboardButton("Telegram", url=tg_link))
-
+        link_links["telegram"] = tg_link
     if links.get("website"):
         row2.append(InlineKeyboardButton("Website", url=links["website"]))
-
+        link_links["website"] = links["website"]
     if links.get("twitter"):
         row2.append(InlineKeyboardButton("Twitter/X", url=links["twitter"]))
+        link_links["twitter"] = links["twitter"]
 
     if row2:
         btns.append(row2)
 
+    if use_promote_button and user_id != "":
+        row3 = [InlineKeyboardButton("Promote in Channels",
+                                     url=generate_promote_link(user_id, mint, caption, logo, link_links))]
+        btns.append(row3)
     return InlineKeyboardMarkup(btns)
 
 
@@ -189,7 +279,7 @@ async def send_token_notice(user: User, mint_address: str, telegram: str | None,
     logo = metas.get("logo")
     links = metas.get("links") or {}
     caption = _build_caption_html(mint_address, metas, telegram)
-    keyboard = _btns_for_token(mint_address, telegram, links)
+    keyboard = _btns_for_token(mint_address, caption, logo, telegram, links, user_id=str(user.id))
 
     try:
         if logo:
@@ -287,6 +377,7 @@ default_commands = [
     BotCommand("membership", "Manage your subscription"),
     BotCommand("referral", "Referral program settings"),
     BotCommand("link", "Your referral link"),
+    BotCommand("test_promote", "Test promotion")
 ]
 
 
@@ -298,25 +389,69 @@ def _now():
 async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cmu = update.my_chat_member
     chat = cmu.chat
-    if chat.type != "private":
-        return
 
-    old_status = cmu.old_chat_member.status
-    new_status = cmu.new_chat_member.status
+    if chat.type == "private":
+        old_status = cmu.old_chat_member.status
+        new_status = cmu.new_chat_member.status
 
-    # User started/unblocked bot
-    if old_status == ChatMemberStatus.LEFT and new_status == ChatMemberStatus.MEMBER:
-        with SessionLocal() as session:
-            upsert_user_private(session, tg_user=cmu.from_user, private_chat_id=chat.id)
-            session.commit()
-        await context.bot.send_message(chat_id=chat.id, text="✅ Registered again.")
+        # User started/unblocked bot
+        if old_status == ChatMemberStatus.LEFT and new_status == ChatMemberStatus.MEMBER:
+            with SessionLocal() as session:
+                upsert_user_private(session, tg_user=cmu.from_user, private_chat_id=chat.id)
+                session.commit()
+            await context.bot.send_message(chat_id=chat.id, text="✅ Registered again.")
 
-    # User blocked bot
-    if new_status == ChatMemberStatus.LEFT:
-        with SessionLocal() as session:
-            session.execute(delete(User).where(User.id == chat.id))
-            session.commit()
+        # User blocked bot
+        if new_status == ChatMemberStatus.LEFT:
+            with SessionLocal() as session:
+                session.execute(delete(User).where(User.id == chat.id))
+                session.commit()
+    else:
+        if chat.type == "channel":
+            chat = cmu.chat  # the channel
+            actor = cmu.from_user  # admin who added/removed the bot
+            old_status = cmu.old_chat_member.status
+            new_status = cmu.new_chat_member.status
 
+            # Upsert/delete channel entry keyed by (user_id, chat_id)
+            with SessionLocal() as session:
+                # Ensure the actor exists in users (FK target)
+                db_user = session.get(User, actor.id)
+                if not db_user:
+                    db_user = User(
+                        id=actor.id,
+                        username=actor.username,
+                        first_name=actor.first_name,
+                        last_name=actor.last_name,
+                        created_at=_now(),
+                    )
+                    session.add(db_user)
+
+                if new_status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
+                    # upsert Channel
+                    row = session.get(Channel, (actor.id, chat.id))  # composite PK order: (user_id, chat_id)
+                    if row is None:
+                        row = Channel(user_id=actor.id, chat_id=chat.id, chat_name=chat.title)
+                        session.add(row)
+                    else:
+                        row.chat_name = chat.title
+                    session.commit()
+
+                    # Optional: warn if no posting right
+                    can_post = getattr(cmu.new_chat_member, "can_post_messages", True)
+                    if not can_post:
+                        context.application.logger.warning(
+                            f"Bot lacks 'post messages' right in channel {chat.id} ({chat.title})"
+                        )
+
+                elif new_status in (ChatMemberStatus.LEFT, ChatMemberStatus.KICKED):
+                    row = session.get(Channel, (actor.id, chat.id))
+                    if row:
+                        session.delete(row)
+                        session.commit()
+
+
+    return
 
 def upsert_user_private(session: Session, *, tg_user, private_chat_id: int, referral_id: int = None) -> User:
     res = session.execute(select(User).where(User.chat_id == private_chat_id))
@@ -343,6 +478,13 @@ def upsert_user_private(session: Session, *, tg_user, private_chat_id: int, refe
 
 async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = f"🤖 *https://t.me/bottito_search_bot?start={update.effective_user.id}*\n\n"
+
+    await update.message.reply_text(message, parse_mode="Markdown")
+
+
+async def test_promote_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    link = generate_promote_link("AAA", "test", "logo", {"telegram": "test"})
+    message = f"🤖 *{link}*\n\n"
 
     await update.message.reply_text(message, parse_mode="Markdown")
 
@@ -682,6 +824,7 @@ async def main():
     bot_app.add_handler(CommandHandler("membership", membership_command))
     bot_app.add_handler(CommandHandler("referral", referral_command))
     bot_app.add_handler(CommandHandler("link", link_command))
+    bot_app.add_handler(CommandHandler("test_promote", test_promote_command))
 
     # Callback query handlers
     bot_app.add_handler(CallbackQueryHandler(edit_wallet_callback, pattern=r"^edit_wallet$"))
@@ -696,6 +839,13 @@ async def main():
     await bot_app.start()
     await bot_app.updater.start_polling()
     logger.warning("🤖 Telegram bot started.")
+    ipc_app = web.Application()
+    ipc_app.add_routes([web.post("/ipc/post", ipc_post_handler)])
+    runner = web.AppRunner(ipc_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 8787)
+    await site.start()
+    logger.warning("📮 IPC server listening on http://127.0.0.1:8787/ipc/post")
 
     while True:
         try:
