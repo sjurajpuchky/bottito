@@ -376,8 +376,7 @@ default_commands = [
     BotCommand("faq", "How does it works"),
     BotCommand("membership", "Manage your subscription"),
     BotCommand("referral", "Referral program settings"),
-    BotCommand("link", "Your referral link"),
-    BotCommand("test_promote", "Test promotion")
+    BotCommand("link", "Your referral link")
 ]
 
 
