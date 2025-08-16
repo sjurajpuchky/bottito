@@ -79,15 +79,25 @@ def create_promotion():
 def submit_promotion():
     form = request.form
 
-
     # Expected keys: mint, caption, logo, links (dict)
     mint = form.get("mint")
     logo = form.get("logo")
-    caption = form.get("caption")
-    chat_ids = form.get("groups", [])
+    caption = form.get("caption").replace("<p>", "").replace("</p>", "")
+    chats = form.get("groups")
+
+    chat_ids = [
+        key.split("[", 1)[1].rstrip("]")
+        for key, val in form.items()
+        if key.startswith("groups[") and val == "1"
+    ]
+
+    links = {
+        key.split("[", 1)[1].rstrip("]"): val
+        for key, val in form.items()
+        if key.startswith("links[")
+    }
     metas = dict()
     metas['logo'] = logo
-    links = form.get("links", dict())
     metas['links'] = links
 
     payload = {
@@ -98,6 +108,7 @@ def submit_promotion():
         "chat_ids": chat_ids,
     }
 
+    print(payload)
     headers = {"Authorization": f"Bearer {IPC_TOKEN}"}
     try:
         r = requests.post(BOT_IPC_URL, json=payload, headers=headers, timeout=10)

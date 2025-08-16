@@ -185,6 +185,7 @@ async def ipc_post_handler(request: web.Request):
 
     try:
         payload = await request.json()
+        print(payload)
         # expected keys
         mint = payload.get("mint") or ""
         telegram_url = payload.get("telegram")  # optional
@@ -376,7 +377,8 @@ default_commands = [
     BotCommand("faq", "How does it works"),
     BotCommand("membership", "Manage your subscription"),
     BotCommand("referral", "Referral program settings"),
-    BotCommand("link", "Your referral link")
+    BotCommand("link", "Your referral link"),
+    BotCommand("howto", "How to use bot")
 ]
 
 
@@ -419,10 +421,10 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # upsert Channel
                 row = session.get(Channel, (actor.id, chat.id))  # composite PK order: (user_id, chat_id)
                 if row is None:
-                    row = Channel(user_id=actor.id, chat_id=chat.id, chat_name=chat.title)
+                    row = Channel(user_id=actor.id, chat_id=chat.id, chat_name=chat.title.encode("ascii", "ignore").decode())
                     session.add(row)
                 else:
-                    row.chat_name = chat.title
+                    row.chat_name = chat.title.encode("ascii", "ignore").decode()
                 session.commit()
                 await context.bot.send_message(chat_id=actor.id, text=f"✅ Bot has been registered to channel {chat.title}.")
 
@@ -468,9 +470,76 @@ async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message, parse_mode="Markdown")
 
 
-async def test_promote_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    link = generate_promote_link("AAA", "test", "logo", {"telegram": "test"})
-    message = f"🤖 *{link}*\n\n"
+async def howto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    message = f"""
+# 🤖 How to Use Bottito Bot
+
+## 1️⃣ Start the Bot
+- Open [@bottito_search_bot](https://t.me/bottito_search_bot)  
+- Press **Start**  
+- If you joined via a referral link (e.g. `https://t.me/bottito_search_bot?start=123456789`), your referrer will get rewards when you subscribe.
+
+---
+
+## 2️⃣ Available Commands
+- **/start** → Register yourself (saves referral if any)  
+- **/faq** → How the bot works  
+- **/membership** → Check your subscription status / enter payment hash  
+- **/referral** → See referral wallet, earnings & claim rewards  
+- **/link** → Get your referral link  
+- **/howto** → Quick usage guide  
+
+---
+
+## 3️⃣ Membership / Subscription
+- Every new user gets **14 days free trial**.  
+- To continue: pay **0.2 SOL monthly** to the wallet shown in `/membership`.  
+- After payment, click **✏️ Enter your Transaction Hash** and paste your Solana transaction hash.  
+- Once verified, you’ll get **31 days Premium**.  
+
+---
+
+## 4️⃣ Referral Program
+- Share your referral link (`/link`) with friends.  
+- When they subscribe, you earn **25% commission (0.05 SOL)**.  
+- In `/referral` you can:  
+  - ✏️ Edit your wallet  
+  - 💰 Claim rewards (payout sent directly in SOL)  
+
+---
+
+## 5️⃣ Token Notifications
+- While trial or Premium:  
+  - The bot monitors **Pump.fun** tokens in real-time.  
+  - Waits a few minutes to fetch metadata.  
+  - If a Telegram link is found → you get a rich notification with:  
+    - Token name, symbol, mint, FDV, description  
+    - Buttons: Pump.fun | Dexscreener | Telegram | Website | Twitter  
+    - (Optional) Promote button if you manage channels  
+
+---
+
+## 6️⃣ Promote in Channels
+- Add the bot to your **Telegram channel** as Admin.  
+- The bot registers your channel.  
+- You’ll see a **Promote in Channels** button in token alerts.  
+- Clicking it auto-posts token info into your channels.  
+
+---
+
+## 7️⃣ Wallet & Referral Claims
+- Set your SOL wallet in `/referral`.  
+- When claiming:  
+  - The bot creates a Solana transaction.  
+  - Sends your earnings directly to your wallet.  
+  - Marks them as paid.  
+
+---
+
+✅ **In summary:**  
+Start → Free trial → Subscribe (0.2 SOL/month) → Get token alerts → Share referral link → Earn SOL → Promote in your channels.  
+"""
 
     await update.message.reply_text(message, parse_mode="Markdown")
 
@@ -482,9 +551,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ("membership", "Manage your subscription"),
         ("referral", "Referral program settings"),
         ("link", "Your referral link"),
+        ("howto", "Howto use bot"),
     ]
 
-    message = "🤖 *Welcome! Here’s what I can do:*\n\n"
+    message = "🤖 *Welcome! Here’s what I can do, tokens are displayed at 7pm till 10pm CET time hold:*\n\n"
     for cmd, desc in commands:
         message += f"{cmd} — {desc}\n"
 
@@ -810,7 +880,7 @@ async def main():
     bot_app.add_handler(CommandHandler("membership", membership_command))
     bot_app.add_handler(CommandHandler("referral", referral_command))
     bot_app.add_handler(CommandHandler("link", link_command))
-    bot_app.add_handler(CommandHandler("test_promote", test_promote_command))
+    bot_app.add_handler(CommandHandler("howto", howto_command))
 
     # Callback query handlers
     bot_app.add_handler(CallbackQueryHandler(edit_wallet_callback, pattern=r"^edit_wallet$"))
