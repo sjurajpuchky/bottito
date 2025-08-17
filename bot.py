@@ -53,10 +53,10 @@ if not dotenv.load_dotenv():
     logger.warning(".env file not found or could not be loaded.")
 
 MORALIS_API_KEY = os.getenv("MORALIS_API_KEY")  # Set this in your environment
-HEADERS = {
-    "accept": "application/json",
-    "X-API-Key": MORALIS_API_KEY,
-}
+MORALIS_API_KEY1 = os.getenv("MORALIS_API_KEY1", "")
+MORALIS_API_KEY2 = os.getenv("MORALIS_API_KEY2", "")
+MORALIS_API_KEY3 = os.getenv("MORALIS_API_KEY3", "")
+MORALIS_API_KEY4 = os.getenv("MORALIS_API_KEY4", "")
 BASE_URL = os.getenv("BASE_URL")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SOLANA_WSS = os.getenv("SOLANA_WSS")
@@ -360,13 +360,19 @@ def get_telegram_from_metas(data):
 
 def get_token_metadata(mint_address: str):
     url = f"https://solana-gateway.moralis.io/token/mainnet/{mint_address}/metadata"
-
+    API_KEYS = [MORALIS_API_KEY, MORALIS_API_KEY1, MORALIS_API_KEY2, MORALIS_API_KEY3, MORALIS_API_KEY4]
     try:
-        response = requests.get(url, headers=HEADERS)
-        if response.status_code != 200:
-            return None
+        for M_API_KEY in API_KEYS:
+            if M_API_KEY != "":
+                HEADERS = {
+                    "accept": "application/json",
+                    "X-API-Key": M_API_KEY,
+                }
+                response = requests.get(url, headers=HEADERS)
+                if response.status_code != 200:
+                    return None
 
-        return response.json()
+                return response.json()
     except Exception as e:
         return None
 
