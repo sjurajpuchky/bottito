@@ -370,11 +370,12 @@ def get_token_metadata(mint_address: str):
                 }
                 response = requests.get(url, headers=HEADERS)
                 if response.status_code != 200:
-                    return None
+                    continue
 
                 return response.json()
     except Exception as e:
         return None
+    return None
 
 
 # 🌍 Global commands for all users (DM with bot)
