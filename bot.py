@@ -5,11 +5,14 @@ import logging
 import os
 import re
 from _decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import dotenv
 import requests
 import websockets
 from aiohttp import web
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from fernet import Fernet
 from solana.rpc.api import Client
 from solders.keypair import Keypair
@@ -51,12 +54,16 @@ logger = logging.getLogger("bottito")
 # -------------------------------
 if not dotenv.load_dotenv():
     logger.warning(".env file not found or could not be loaded.")
-
+TZ = ZoneInfo("Europe/Prague")
 MORALIS_API_KEY = os.getenv("MORALIS_API_KEY")  # Set this in your environment
 MORALIS_API_KEY1 = os.getenv("MORALIS_API_KEY1", "")
 MORALIS_API_KEY2 = os.getenv("MORALIS_API_KEY2", "")
 MORALIS_API_KEY3 = os.getenv("MORALIS_API_KEY3", "")
 MORALIS_API_KEY4 = os.getenv("MORALIS_API_KEY4", "")
+MORALIS_API_KEY5 = os.getenv("MORALIS_API_KEY5", "")
+MORALIS_API_KEY6 = os.getenv("MORALIS_API_KEY6", "")
+MORALIS_API_KEY7 = os.getenv("MORALIS_API_KEY7", "")
+MORALIS_API_KEY8 = os.getenv("MORALIS_API_KEY8", "")
 BASE_URL = os.getenv("BASE_URL")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SOLANA_WSS = os.getenv("SOLANA_WSS")
@@ -360,7 +367,9 @@ def get_telegram_from_metas(data):
 
 def get_token_metadata(mint_address: str):
     url = f"https://solana-gateway.moralis.io/token/mainnet/{mint_address}/metadata"
-    API_KEYS = [MORALIS_API_KEY, MORALIS_API_KEY1, MORALIS_API_KEY2, MORALIS_API_KEY3, MORALIS_API_KEY4]
+    API_KEYS = [MORALIS_API_KEY, MORALIS_API_KEY1, MORALIS_API_KEY2,
+                MORALIS_API_KEY3, MORALIS_API_KEY4, MORALIS_API_KEY5,
+                MORALIS_API_KEY6, MORALIS_API_KEY7, MORALIS_API_KEY8]
     try:
         for M_API_KEY in API_KEYS:
             if M_API_KEY != "":
@@ -392,6 +401,21 @@ default_commands = [
 def _now():
     return datetime.datetime.utcnow()
 
+
+def subscription_checker_task():
+    with SessionLocal() as session:
+        users = session.execute(select(User)).scalars().all()
+
+        for user in users:
+            if int(user.subscribed_expiry_at.timestamp()) < int(_now().timestamp()):
+                if user.is_subscribed:
+                    subscription = "Premium"
+                else:
+                    subscription = "Trial"
+
+                message = f"""🤖 *Your membership is: {subscription} is expired* use command /membership to renew 
+                your subscription.\n"""
+                bot_app.bot.send_message(user.chat_id, message, parse_mode="Markdown")
 
 # Fires when user starts/unblocks (bot becomes MEMBER) or blocks (bot becomes KICKED) in PRIVATE
 async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -480,22 +504,22 @@ async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def howto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     message = f"""
-# 🤖 How to Use Bottito Bot
+# *🤖 How to Use Bottito Bot*
 
 ## 1️⃣ Start the Bot
 - Open [@bottito_search_bot](https://t.me/bottito_search_bot)  
-- Press **Start**  
+- Press *Start* 
 - If you joined via a referral link (e.g. `https://t.me/bottito_search_bot?start=123456789`), your referrer will get rewards when you subscribe.
 
 ---
 
 ## 2️⃣ Available Commands
-- **/start** → Register yourself (saves referral if any)  
-- **/faq** → How the bot works  
-- **/membership** → Check your subscription status / enter payment hash  
-- **/referral** → See referral wallet, earnings & claim rewards  
-- **/link** → Get your referral link  
-- **/howto** → Quick usage guide  
+- */start* → Register yourself (saves referral if any)  
+- */faq* → How the bot works  
+- */membership* → Check your subscription status / enter payment hash  
+- */referral* → See referral wallet, earnings & claim rewards  
+- */link* → Get your referral link  
+- */howto* → Quick usage guide  
 
 ---
 
@@ -909,6 +933,21 @@ async def main():
     site = web.TCPSite(runner, "127.0.0.1", 8787)
     await site.start()
     logger.warning("📮 IPC server listening on http://127.0.0.1:8787/ipc/post")
+    scheduler = BackgroundScheduler(timezone=TZ)
+
+    # Run every day at 20:00 local time
+    scheduler.add_job(
+        subscription_checker_task,
+        trigger=CronTrigger(hour=20, minute=0, timezone=TZ),
+        id="daily_20",
+        replace_existing=True,
+        misfire_grace_time=3600,  # run if missed within the last hour
+        coalesce=True,  # merge multiple missed runs into one
+        max_instances=1
+    )
+
+    scheduler.start()
+    logger.warning("✅ Scheduler started.")
 
     while True:
         try:
