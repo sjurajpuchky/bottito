@@ -511,6 +511,8 @@ async def howto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = f"""
 # *🤖 How to Use Bottito Bot*
 
+https://www.bottito.fun
+
 ## 1️⃣ Start the Bot
 - Open [@bottito_search_bot](https://t.me/bottito_search_bot)  
 - Press *Start* 
@@ -618,7 +620,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def faq_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "🤖 *FAQ* - How does it work?\n\n"
-        "Welcome! Here’s how our bot helps you:\n\n"
+        "Welcome! Here’s how our bot helps you https://www.bottito.fun\n\n"
         "1️⃣ *Token Detection*: The bot monitors new Pump.fun, Raydium and Jupiter token launches in real-time.\n"
         "2️⃣ *Metadata Scanning*: We fetch token details (name, mint address, Telegram link).\n"
         "3️⃣ *Contacting Devs*: If a Telegram is found, we send you token info in this chat.\n"
