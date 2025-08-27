@@ -18,6 +18,7 @@ class User(Base):
 
     is_subscribed = Column(Boolean, default=False)
     is_permanent = Column(Boolean, default=False)
+    is_super_admin = Column(Boolean, default=False)
     wallet_address = Column(String(255), default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     subscribed_expiry_at = Column(DateTime, default=None)

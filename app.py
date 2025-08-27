@@ -36,6 +36,10 @@ IPC_TOKEN = os.getenv("IPC_TOKEN")
 
 fernet = Fernet(SECRET_KEY)
 
+@app.route("/")
+def homepage():
+    return render_template("homepage.html")
+
 
 @app.route("/create_promotion")
 def create_promotion():

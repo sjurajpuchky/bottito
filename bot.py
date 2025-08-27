@@ -11,7 +11,7 @@ import dotenv
 import requests
 import websockets
 from aiohttp import web
-from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fernet import Fernet
 from solana.rpc.api import Client
@@ -310,7 +310,7 @@ async def send_token_notice(user: User, mint_address: str, telegram: str | None,
             )
             logger.warning(f"Token {mint_address} sent to {user.chat_id}")
     except TelegramError as e:
-        logger.exception(f"[!] Failed to notify user {user.id}: {e}")
+        pass
 
 
 async def send_token(mint_address: str, telegram: str, metas: dict):
@@ -402,7 +402,8 @@ def _now():
     return datetime.datetime.utcnow()
 
 
-def subscription_checker_task():
+async def subscription_checker_task():
+    logger.warning("Scheduled task fired")
     with SessionLocal() as session:
         users = session.execute(select(User)).scalars().all()
 
@@ -415,7 +416,10 @@ def subscription_checker_task():
 
                 message = f"""🤖 *Your membership is: {subscription} is expired* use command /membership to renew 
                 your subscription.\n"""
-                bot_app.bot.send_message(user.chat_id, message, parse_mode="Markdown")
+                try:
+                    await bot_app.bot.send_message(user.chat_id, message, parse_mode="Markdown")
+                except:
+                    pass
 
 # Fires when user starts/unblocks (bot becomes MEMBER) or blocks (bot becomes KICKED) in PRIVATE
 async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -452,6 +456,7 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # upsert Channel
                 row = session.get(Channel, (actor.id, chat.id))  # composite PK order: (user_id, chat_id)
                 if row is None:
+                    upsert_user_private(session, tg_user=actor, private_chat_id=actor.id)
                     row = Channel(user_id=actor.id, chat_id=chat.id, chat_name=chat.title.encode("ascii", "ignore").decode())
                     session.add(row)
                 else:
@@ -653,6 +658,13 @@ to: *{WALLET_ADDRESS}*"""
             await update.message.reply_text(f"🤖 * Call /start first to register *\n", parse_mode="Markdown")
 
 
+def escape_md(text: str) -> str:
+    specials = r"_*[]()~`>#+-=|{}.!<>"
+    for ch in specials:
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
 async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with SessionLocal() as session:
         res = session.execute(select(User).where(User.id == update.effective_user.id))
@@ -667,13 +679,20 @@ async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for payment in un_payments:
             earned = earned + payment.amount_lamports
 
-        earned = round(Decimal(earned / 1_000_000_000), 9)
+        earned = float(round(Decimal(earned / 1_000_000_000), 9))
 
         if user is not None:
             help_text = f"""🤖 *Referral Program*\n\n*Your wallet: {user.wallet_address}*
 Our referral program pays you 25% of each subscription registered upon your link.
 You have earned: 💰 *{earned} SOL*            
             \n"""
+            referrals = session.execute(
+                select(User).where(User.referral_id == update.effective_user.id)).scalars().all()
+
+            for referral in referrals:
+                help_text = help_text + f"@{escape_md(referral.username)} expiry *{referral.subscribed_expiry_at}*\n"
+
+            logger.warning(help_text)
 
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✏️ Edit Your SOL Wallet", callback_data=f"edit_wallet")],
@@ -729,6 +748,40 @@ async def receive_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     message = update.message.text.strip()
     bot_id = str(context.bot.id)
 
+    # --- send message to other users --- #3
+    if "#message_to_all:" in message:
+        logger.warning(f"Message to all: {message}")
+        with SessionLocal() as session:
+            res = session.execute(select(User).where(User.id == update.effective_user.id))
+            user: User = res.scalar_one_or_none()
+            if user is not None and user.is_super_admin:
+                users = session.execute(select(User).where(User.id != update.effective_user.id)).scalars().all()
+                for user_to_message in users:
+                    try:
+                        await bot_app.bot.send_message(user_to_message.id,message.split("#message_to_all:")[1])
+                    except:
+                        pass
+                return
+
+    if "#pin_to_all:" in message:
+        logger.warning(f"Pin to all: {message}")
+        with SessionLocal() as session:
+            res = session.execute(select(User).where(User.id == update.effective_user.id))
+            user: User = res.scalar_one_or_none()
+            if user is not None and user.is_super_admin:
+                users = session.execute(select(User).where(User.id != update.effective_user.id)).scalars().all()
+                for user_to_message in users:
+                    try:
+                        msg_id = (await bot_app.bot.send_message(user_to_message.id,
+                                                                 message.split("#pin_to_all:")[1])).message_id
+                        await context.bot.pin_chat_message(
+                            chat_id=user_to_message.id,
+                            message_id=msg_id,
+                            disable_notification=False
+                        )
+                    except:
+                        pass
+                return
     # --- Wallet Editing ---
     if pending_profile_edits.get(user_id):
         del pending_profile_edits[user_id]
@@ -739,13 +792,13 @@ async def receive_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         try:
             with SessionLocal() as session:
-                with SessionLocal() as session:
-                    res = session.execute(select(User).where(User.id == update.effective_user.id))
-                    user: User = res.scalar_one_or_none()
 
-                    if user is not None:
-                        user.wallet_address = message
-                        session.commit()
+                res = session.execute(select(User).where(User.id == update.effective_user.id))
+                user: User = res.scalar_one_or_none()
+
+                if user is not None:
+                    user.wallet_address = message
+                    session.commit()
             await update.message.reply_text("✅ Your wallet address has been updated.")
         except Exception as e:
             logging.exception("Failed to update wallet")
@@ -933,13 +986,13 @@ async def main():
     site = web.TCPSite(runner, "127.0.0.1", 8787)
     await site.start()
     logger.warning("📮 IPC server listening on http://127.0.0.1:8787/ipc/post")
-    scheduler = BackgroundScheduler(timezone=TZ)
+    scheduler = AsyncIOScheduler(timezone=TZ)
 
-    # Run every day at 20:00 local time
+    # Run every day at 18:00 local time
     scheduler.add_job(
         subscription_checker_task,
-        trigger=CronTrigger(hour=20, minute=0, timezone=TZ),
-        id="daily_20",
+        trigger=CronTrigger(hour=18, minute=0, timezone=TZ),
+        id="daily_18",
         replace_existing=True,
         misfire_grace_time=3600,  # run if missed within the last hour
         coalesce=True,  # merge multiple missed runs into one
