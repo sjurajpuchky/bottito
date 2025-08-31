@@ -71,7 +71,7 @@ SOLANA_HTTP = os.getenv("SOLANA_HTTP")
 WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
 WALLET_PK = os.getenv("WALLET_PK")
 SECRET_KEY = bytes(os.getenv("SECRET_KEY").encode("utf8"))
-EXPECTED_SOL = Decimal("0.2")
+EXPECTED_SOL = Decimal("0.05")
 REFERRAL_LAMPORTS = int(EXPECTED_SOL * Decimal("0.25") * Decimal(1_000_000_000))
 EXPECTED_LAMPORTS = int(EXPECTED_SOL * Decimal(1_000_000_000))
 SYSTEM_PROGRAM = "11111111111111111111111111111111"
@@ -334,8 +334,9 @@ async def send_token(mint_address: str, telegram: str, metas: dict):
 
 
 
-async def process_token(mint_address: str):
-    await asyncio.sleep(60*5)
+async def process_token(mint_address: str, immediate=False):
+    if not immediate:
+        await asyncio.sleep(60*5)
     meta = get_token_metadata(mint_address)
     if meta is not None:
         telegram = get_telegram_from_metas(meta)
@@ -532,7 +533,7 @@ https://www.bottito.fun
 
 ## 3️⃣ Membership / Subscription
 - Every new user gets **14 days free trial**.  
-- To continue: pay **0.2 SOL monthly** to the wallet shown in `/membership`.  
+- To continue: pay **0.05 SOL monthly** to the wallet shown in `/membership`.  
 - After payment, click **✏️ Enter your Transaction Hash** and paste your Solana transaction hash.  
 - Once verified, you’ll get **31 days Premium**.  
 
@@ -576,7 +577,7 @@ https://www.bottito.fun
 ---
 
 ✅ **In summary:**  
-Start → Free trial → Subscribe (0.2 SOL/month) → Get token alerts → Share referral link → Earn SOL → Promote in your channels.  
+Start → Free trial → Subscribe (0.05 SOL/month) → Get token alerts → Share referral link → Earn SOL → Promote in your channels.  
 """
 
     await update.message.reply_text(message, parse_mode="Markdown")
@@ -784,6 +785,11 @@ async def receive_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     except:
                         pass
                 return
+
+    if "#mint_to_all:" in message:
+        logger.warning(f"Mint to all: {message}")
+        await process_token(message.split("#mint_to_all:")[1].strip(), immediate=True)
+        return
     # --- Wallet Editing ---
     if pending_profile_edits.get(user_id):
         del pending_profile_edits[user_id]
