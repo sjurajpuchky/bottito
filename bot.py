@@ -107,7 +107,7 @@ def fetch_tx(signature: str):
         "method": "getTransaction",
         "params": [
             signature,
-            {"encoding": "jsonParsed","maxSupportedTransactionVersion": 0, "commitment": "confirmed"}
+            {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "commitment": "confirmed"}
         ],
     }
     r = requests.post(SOLANA_HTTP, json=payload, timeout=20)
@@ -212,7 +212,7 @@ async def ipc_post_handler(request: web.Request):
         return web.json_response({"ok": False, "error": "bad_request"}, status=400)
 
 
-def _btns_for_token( mint: str, caption: str, logo: str | None, telegram_url: str | None,
+def _btns_for_token(mint: str, caption: str, logo: str | None, telegram_url: str | None,
                     links: dict | None, use_promote_button=True, user_id="") -> InlineKeyboardMarkup:
     links = links or {}
     btns = []
@@ -331,12 +331,9 @@ async def send_token(mint_address: str, telegram: str, metas: dict):
             await send_token_notice(user, mint_address, telegram, metas)
 
 
-
-
-
 async def process_token(mint_address: str, immediate=False):
     if not immediate:
-        await asyncio.sleep(60*5)
+        await asyncio.sleep(60 * 5)
     meta = get_token_metadata(mint_address)
     if meta is not None:
         telegram = get_telegram_from_metas(meta)
@@ -395,7 +392,9 @@ default_commands = [
     BotCommand("membership", "Manage your subscription"),
     BotCommand("referral", "Referral program settings"),
     BotCommand("link", "Your referral link"),
-    BotCommand("howto", "How to use bot")
+    BotCommand("howto", "How to use bot"),
+    BotCommand("settings", "Setup your filters and behaviour of bot"),
+    BotCommand("mint", "Display token by mint address")
 ]
 
 
@@ -421,6 +420,7 @@ async def subscription_checker_task():
                     await bot_app.bot.send_message(user.chat_id, message, parse_mode="Markdown")
                 except:
                     pass
+
 
 # Fires when user starts/unblocks (bot becomes MEMBER) or blocks (bot becomes KICKED) in PRIVATE
 async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -458,12 +458,14 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 row = session.get(Channel, (actor.id, chat.id))  # composite PK order: (user_id, chat_id)
                 if row is None:
                     upsert_user_private(session, tg_user=actor, private_chat_id=actor.id)
-                    row = Channel(user_id=actor.id, chat_id=chat.id, chat_name=chat.title.encode("ascii", "ignore").decode())
+                    row = Channel(user_id=actor.id, chat_id=chat.id,
+                                  chat_name=chat.title.encode("ascii", "ignore").decode())
                     session.add(row)
                 else:
                     row.chat_name = chat.title.encode("ascii", "ignore").decode()
                 session.commit()
-                await context.bot.send_message(chat_id=actor.id, text=f"✅ Bot has been registered to channel {chat.title}.")
+                await context.bot.send_message(chat_id=actor.id,
+                                               text=f"✅ Bot has been registered to channel {chat.title}.")
 
                 # Optional: warn if no posting right
                 can_post = getattr(cmu.new_chat_member, "can_post_messages", True)
@@ -477,6 +479,7 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     session.delete(row)
                     session.commit()
     return
+
 
 def upsert_user_private(session: Session, *, tg_user, private_chat_id: int, referral_id: int = None) -> User:
     res = session.execute(select(User).where(User.chat_id == private_chat_id))
@@ -507,8 +510,19 @@ async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message, parse_mode="Markdown")
 
 
-async def howto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = f"🤖 *https://t.me/bottito_search_bot?start={update.effective_user.id}*\n\n"
 
+    await update.message.reply_text(message, parse_mode="Markdown")
+
+
+async def mint_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = f"🤖 *https://t.me/bottito_search_bot?start={update.effective_user.id}*\n\n"
+
+    await update.message.reply_text(message, parse_mode="Markdown")
+
+
+async def howto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = f"""
 # *🤖 How to Use Bottito Bot*
 
@@ -746,6 +760,7 @@ def payout_referral(referral_user: User, referred_user: User):
         session.add(payment)
         session.commit()
 
+
 async def receive_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     message = update.message.text.strip()
@@ -761,9 +776,24 @@ async def receive_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 users = session.execute(select(User).where(User.id != update.effective_user.id)).scalars().all()
                 for user_to_message in users:
                     try:
-                        await bot_app.bot.send_message(user_to_message.id,message.split("#message_to_all:")[1])
+                        await bot_app.bot.send_message(user_to_message.id, message.split("#message_to_all:")[1])
                     except:
                         pass
+                return
+
+    if "#message_to_expired:" in message:
+        logger.warning(f"Message to all: {message}")
+        with SessionLocal() as session:
+            res = session.execute(select(User).where(User.id == update.effective_user.id))
+            user: User = res.scalar_one_or_none()
+            if user is not None and user.is_super_admin:
+                users = session.execute(select(User).where(User.id != update.effective_user.id)).scalars().all()
+                for user_to_message in users:
+                    if int(user_to_message.subscribed_expiry_at.timestamp()) < int(_now().timestamp()):
+                        try:
+                            await bot_app.bot.send_message(user_to_message.id, message.split("#message_to_expired:")[1])
+                        except:
+                            pass
                 return
 
     if "#pin_to_all:" in message:
@@ -888,8 +918,6 @@ def load_payer() -> Keypair:
     return Keypair.from_base58_string(WALLET_PK)
 
 
-
-
 async def send_transaction(recipient: str, lamports: int) -> str:
     client: Client = Client(SOLANA_HTTP)
     rent_min = client.get_minimum_balance_for_rent_exemption(0).value
@@ -973,6 +1001,8 @@ async def main():
     bot_app.add_handler(CommandHandler("referral", referral_command))
     bot_app.add_handler(CommandHandler("link", link_command))
     bot_app.add_handler(CommandHandler("howto", howto_command))
+    bot_app.add_handler(CommandHandler("settings", settings_command))
+    bot_app.add_handler(CommandHandler("mint", mint_command))
 
     # Callback query handlers
     bot_app.add_handler(CallbackQueryHandler(edit_wallet_callback, pattern=r"^edit_wallet$"))
