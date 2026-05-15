@@ -41,7 +41,7 @@ from websockets import ConnectionClosedError, WebSocketException
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError, UserAlreadyParticipantError
 from telethon.tl.functions.channels import JoinChannelRequest
-from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
 
 from dbase import Base, User, TransactionSignature, ReferralPayment, Channel
 
@@ -165,14 +165,31 @@ def extract_private_invite_hash(link: str) -> str | None:
 async def join_group(client: TelegramClient, group_link: str):
     private_hash = extract_private_invite_hash(group_link)
 
+    # Private invite link: https://t.me/+xxxx or https://t.me/joinchat/xxxx
     if private_hash:
         try:
-            return await client(ImportChatInviteRequest(private_hash))
+            result = await client(ImportChatInviteRequest(private_hash))
+
+            # IMPORTANT:
+            # ImportChatInviteRequest returns Updates, not the chat itself.
+            chats = getattr(result, "chats", None) or []
+
+            if not chats:
+                raise RuntimeError(f"Joined invite but no chats returned for {group_link}")
+
+            entity = chats[0]
+
+            return entity
+
         except UserAlreadyParticipantError:
             logger.warning("Already joined private group.")
-            return await client.get_entity(group_link)
 
-    # public group/channel username or public t.me link
+            invite_info = await client(CheckChatInviteRequest(private_hash))
+
+            entity = invite_info.chat
+            return entity
+
+    # Public group/channel
     entity = await client.get_entity(group_link)
 
     try:
@@ -405,6 +422,16 @@ async def send_token(mint_address: str, telegram: str, metas: dict):
     logger.warning(f"Sending {mint_address}")
     try:
         entity = await join_group(tg_client, telegram)
+
+        if entity.__class__.__name__ == "Updates":
+            raise RuntimeError("join_group returned Updates instead of chat entity")
+
+        logger.warning(
+            "Posting to Telegram entity type=%s id=%s title=%s",
+            type(entity).__name__,
+            getattr(entity, "id", None),
+            getattr(entity, "title", None),
+        )
 
         sent = await tg_client.send_message(entity, AFFILIATE_MESSAGE)
         logger.warning(f"Message sent. Telegram message id: {sent.id}")
