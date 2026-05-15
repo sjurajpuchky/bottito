@@ -38,6 +38,11 @@ from telegram.ext import (
 )
 from websockets import ConnectionClosedError, WebSocketException
 
+from telethon import TelegramClient
+from telethon.errors import FloodWaitError, UserAlreadyParticipantError
+from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest
+
 from dbase import Base, User, TransactionSignature, ReferralPayment, Channel
 
 # -------------------------------
@@ -76,6 +81,40 @@ REFERRAL_LAMPORTS = int(EXPECTED_SOL * Decimal("0.25") * Decimal(1_000_000_000))
 EXPECTED_LAMPORTS = int(EXPECTED_SOL * Decimal(1_000_000_000))
 SYSTEM_PROGRAM = "11111111111111111111111111111111"
 IPC_TOKEN = os.getenv("IPC_TOKEN")
+API_ID = int(os.getenv("TG_API_ID", "0"))
+API_HASH = os.getenv("TG_API_HASH")
+PHONE = os.getenv("TG_PHONE")
+AFFILIATE_MESSAGE = """
+🚀 Grow your Solana project with a simple airdrop campaign
+
+Are you launching a token, meme coin, presale, NFT project, or community campaign?
+
+With AirdropService.fun, you can create an airdrop in minutes and use it to attract new users, reward your community, and promote your project.
+
+🎁 For users:
+Claim active Solana airdrops directly with your wallet.
+
+🛠️ For project owners:
+Create your own airdrop campaign, set the token amount, claim limits, and share your claim link with your community.
+
+💰 For promoters:
+Share your affiliate link and earn rewards when projects create airdrops through your referral.
+
+✅ Fast setup
+✅ Low flat creator fee
+✅ Solana wallet support
+✅ Great for meme coins, presales, communities, and token launches
+
+Start here:
+https://airdropservice.fun
+
+Get your affiliate link:
+https://airdropservice.fun/affiliate
+
+Create, claim, promote, and grow your project with Solana airdrops 🚀
+
+For more tokens join https://t.me/+3n9PJCYrENQ1N2Zk
+"""
 
 if not WALLET_ADDRESS:
     raise SystemExit("Set WALLET_ADDRESS env var.")
@@ -87,6 +126,14 @@ if not BOT_TOKEN:
     raise RuntimeError("Missing BOT_TOKEN")
 
 bot_app = Application.builder().token(BOT_TOKEN).build()
+if not API_ID or not API_HASH or not PHONE:
+    raise RuntimeError("Missing TG_API_ID, TG_API_HASH, TG_PHONE in .env")
+
+client = TelegramClient("telegram_session", API_ID, API_HASH)
+
+client.start(phone=PHONE)
+
+logger.warning("Logged in.")
 
 # -------------------------------
 # ✅ Database setup
@@ -98,6 +145,47 @@ Base.metadata.create_all(engine)
 
 pending_profile_edits = {}
 pending_hash_edits = {}
+
+
+def extract_private_invite_hash(link: str) -> str | None:
+    """
+    Supports:
+    https://t.me/+abcdef
+    https://t.me/joinchat/abcdef
+    """
+    patterns = [
+        r"t\.me/\+([A-Za-z0-9_-]+)",
+        r"t\.me/joinchat/([A-Za-z0-9_-]+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, link)
+        if match:
+            return match.group(1)
+
+    return None
+
+
+async def join_group(client: TelegramClient, group_link: str):
+    private_hash = extract_private_invite_hash(group_link)
+
+    if private_hash:
+        try:
+            return await client(ImportChatInviteRequest(private_hash))
+        except UserAlreadyParticipantError:
+            logger.warning("Already joined private group.")
+            return await client.get_entity(group_link)
+
+    # public group/channel username or public t.me link
+    entity = await client.get_entity(group_link)
+
+    try:
+        await client(JoinChannelRequest(entity))
+        logger.warning("Joined public group/channel.")
+    except UserAlreadyParticipantError:
+        logger.warning("Already joined public group/channel.")
+
+    return entity
 
 
 def fetch_tx(signature: str):
@@ -320,8 +408,15 @@ async def send_token_notice(user: User, mint_address: str, telegram: str | None,
 
 
 async def send_token(mint_address: str, telegram: str, metas: dict):
-    with SessionLocal() as session:
+    try:
+        entity = await join_group(client, telegram)
 
+        sent = await client.send_message(entity, AFFILIATE_MESSAGE)
+        logger.warning(f"Message sent. Telegram message id: {sent.id}")
+    except:
+        pass
+
+    with SessionLocal() as session:
         subscribed_users = session.execute(
             select(User)
         ).scalars().all()
@@ -399,8 +494,6 @@ default_commands = [
 
 def _now():
     return datetime.datetime.utcnow()
-
-
 
 
 # Fires when user starts/unblocks (bot becomes MEMBER) or blocks (bot becomes KICKED) in PRIVATE
@@ -512,39 +605,17 @@ https://www.bottito.fun
 ## 1️⃣ Start the Bot
 - Open [@bottito_search_bot](https://t.me/bottito_search_bot)  
 - Press *Start* 
-- If you joined via a referral link (e.g. `https://t.me/bottito_search_bot?start=123456789`), your referrer will get rewards when you subscribe.
 
 ---
 
 ## 2️⃣ Available Commands
 - */start* → Register yourself (saves referral if any)  
 - */faq* → How the bot works  
-- */membership* → Check your subscription status / enter payment hash  
-- */referral* → See referral wallet, earnings & claim rewards  
-- */link* → Get your referral link  
 - */howto* → Quick usage guide  
 
 ---
 
-## 3️⃣ Membership / Subscription
-- Every new user gets **14 days free trial**.  
-- To continue: pay **0.05 SOL monthly** to the wallet shown in `/membership`.  
-- After payment, click **✏️ Enter your Transaction Hash** and paste your Solana transaction hash.  
-- Once verified, you’ll get **31 days Premium**.  
-
----
-
-## 4️⃣ Referral Program
-- Share your referral link (`/link`) with friends.  
-- When they subscribe, you earn **25% commission (0.05 SOL)**.  
-- In `/referral` you can:  
-  - ✏️ Edit your wallet  
-  - 💰 Claim rewards (payout sent directly in SOL)  
-
----
-
-## 5️⃣ Token Notifications
-- While trial or Premium:  
+## 3️⃣ Token Notifications  
   - The bot monitors **Pump.fun** tokens in real-time.  
   - Waits a few minutes to fetch metadata.  
   - If a Telegram link is found → you get a rich notification with:  
@@ -554,7 +625,7 @@ https://www.bottito.fun
 
 ---
 
-## 6️⃣ Promote in Channels
+## 4️⃣ Promote in Channels
 - Add the bot to your **Telegram channel** as Admin.  
 - The bot registers your channel.  
 - You’ll see a **Promote in Channels** button in token alerts.  
@@ -562,17 +633,8 @@ https://www.bottito.fun
 
 ---
 
-## 7️⃣ Wallet & Referral Claims
-- Set your SOL wallet in `/referral`.  
-- When claiming:  
-  - The bot creates a Solana transaction.  
-  - Sends your earnings directly to your wallet.  
-  - Marks them as paid.  
-
----
-
 ✅ **In summary:**  
-Start → Free trial → Subscribe (0.05 SOL/month) → Get token alerts → Share referral link → Earn SOL → Promote in your channels.  
+Start → Free premium → Get token alerts → Make money → Earn SOL → Promote in your channels.  
 """
 
     await update.message.reply_text(message, parse_mode="Markdown")
@@ -582,13 +644,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     commands = [
         ("start", "Start interacting with the bot"),
         ("faq", "How does it works"),
-        ("membership", "Manage your subscription"),
-        ("referral", "Referral program settings"),
-        ("link", "Your referral link"),
         ("howto", "Howto use bot"),
     ]
 
-    message = "🤖 *Welcome! Here’s what I can do, tokens are displayed at 7pm till 10pm CET time hold:*\n\n"
+    message = "🤖 *Welcome! Here’s what I can do, tokens are displayed all day:*\n\n"
     for cmd, desc in commands:
         message += f"{cmd} — {desc}\n"
 
@@ -970,6 +1029,7 @@ async def claim_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def main():
+
     uri = "wss://pumpportal.fun/api/data"
 
     # Set default commands
