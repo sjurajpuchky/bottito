@@ -129,11 +129,7 @@ bot_app = Application.builder().token(BOT_TOKEN).build()
 if not API_ID or not API_HASH or not PHONE:
     raise RuntimeError("Missing TG_API_ID, TG_API_HASH, TG_PHONE in .env")
 
-client = TelegramClient("telegram_session", API_ID, API_HASH)
-
-client.start(phone=PHONE)
-
-logger.warning("Logged in.")
+tg_client: TelegramClient | None = None
 
 # -------------------------------
 # ✅ Database setup
@@ -408,9 +404,9 @@ async def send_token_notice(user: str, mint_address: str, telegram: str | None, 
 async def send_token(mint_address: str, telegram: str, metas: dict):
     logger.warning(f"Sending {mint_address}")
     try:
-        entity = await join_group(client, telegram)
+        entity = await join_group(tg_client, telegram)
 
-        sent = await client.send_message(entity, AFFILIATE_MESSAGE)
+        sent = await tg_client.send_message(entity, AFFILIATE_MESSAGE)
         logger.warning(f"Message sent. Telegram message id: {sent.id}")
     except Exception as e:
         logger.exception(e)
@@ -1028,7 +1024,12 @@ async def claim_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def main():
+    global tg_client
 
+    tg_client = TelegramClient("telegram_session", API_ID, API_HASH)
+    await tg_client.start(phone=PHONE)
+
+    logger.warning("✅ Telethon user client started.")
     uri = "wss://pumpportal.fun/api/data"
 
     # Set default commands
