@@ -406,6 +406,7 @@ async def send_token_notice(user: str, mint_address: str, telegram: str | None, 
 
 
 async def send_token(mint_address: str, telegram: str, metas: dict):
+    logger.warning(f"Sending {mint_address}")
     try:
         entity = await join_group(client, telegram)
 
