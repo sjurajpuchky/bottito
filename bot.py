@@ -370,7 +370,7 @@ def _build_caption_html(mint: str, metas: dict, telegram_url: str | None) -> str
     return "\n".join(parts)
 
 
-async def send_token_notice(user: User, mint_address: str, telegram: str | None, metas: dict):
+async def send_token_notice(user: str, mint_address: str, telegram: str | None, metas: dict):
     """
     Sends a rich notification to a user about a new token.
     - Photo: metas['logo'] (if present)
@@ -381,13 +381,13 @@ async def send_token_notice(user: User, mint_address: str, telegram: str | None,
     logo = metas.get("logo")
     links = metas.get("links") or {}
     caption = _build_caption_html(mint_address, metas, telegram)
-    keyboard = _btns_for_token(mint_address, caption, logo, telegram, links, user_id=str(user.id))
+    keyboard = _btns_for_token(mint_address, caption, logo, telegram, links, user_id=user)
 
     try:
         if logo:
             # Send as photo with caption
             await bot_app.bot.send_photo(
-                chat_id=user.id,
+                chat_id=user,
                 photo=logo,
                 caption=caption,
                 reply_markup=keyboard,
@@ -396,7 +396,7 @@ async def send_token_notice(user: User, mint_address: str, telegram: str | None,
         else:
             # Fallback: no image available
             await bot_app.bot.send_message(
-                chat_id=user.id,
+                chat_id=user,
                 text=caption,
                 reply_markup=keyboard,
                 parse_mode="HTML"
@@ -411,7 +411,8 @@ async def send_token(mint_address: str, telegram: str, metas: dict):
 
         sent = await client.send_message(entity, AFFILIATE_MESSAGE)
         logger.warning(f"Message sent. Telegram message id: {sent.id}")
-    except:
+    except Exception as e:
+        logger.exception(e)
         pass
 
     with SessionLocal() as session:
@@ -420,8 +421,7 @@ async def send_token(mint_address: str, telegram: str, metas: dict):
         ).scalars().all()
 
         for user in subscribed_users:
-            logger.warning(f"Token {mint_address} sending to {user.chat_id}")
-            await send_token_notice(user, mint_address, telegram, metas)
+            await send_token_notice(user.id, mint_address, telegram, metas)
 
 
 async def process_token(mint_address: str, immediate=False):
