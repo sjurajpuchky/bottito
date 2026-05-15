@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container py-5">
+  <div class="row justify-content-center">
+    <div class="col-lg-8">
+
+      <div class="card shadow-sm border-0">
+        <div class="card-body p-4 p-md-5">
+
+          <div class="text-center mb-4">
+            <h1 class="h3 fw-bold mb-3">
+              Make Money with Bottito Bot
+            </h1>
+
+            <p class="text-muted mb-0">
+              Promote <strong>AirdropService.fun</strong>, help crypto projects create Solana airdrops,
+              and earn through your affiliate link.
+            </p>
+          </div>
+
+          <div class="alert alert-success">
+            <strong>How to earn:</strong>
+            get your affiliate link from
+            <a href="https://airdropservice.fun/affiliate" target="_blank" class="fw-bold">
+              AirdropService.fun Affiliate
+            </a>
+            and use it when promoting airdrop services to Telegram project admins.
+          </div>
+
+          <h2 class="h5 fw-bold mt-4">How it works</h2>
+
+          <div class="list-group list-group-flush mb-4">
+
+            <div class="list-group-item px-0">
+              <strong>1. Open Telegram groups</strong>
+              <p class="mb-0 text-muted">
+                Find Solana token projects, meme coin communities, presale groups, launch groups,
+                and crypto marketing groups.
+              </p>
+            </div>
+
+            <div class="list-group-item px-0">
+              <strong>2. Join the group</strong>
+              <p class="mb-0 text-muted">
+                Check if the project is active and if they need more holders, users, visibility,
+                or community growth.
+              </p>
+            </div>
+
+            <div class="list-group-item px-0">
+              <strong>3. Contact the admin</strong>
+              <p class="mb-0 text-muted">
+                Send a polite direct message to the admin. Do not spam the public group.
+              </p>
+            </div>
+
+            <div class="list-group-item px-0">
+              <strong>4. Offer airdrop listing</strong>
+              <p class="mb-0 text-muted">
+                Explain that AirdropService.fun helps projects create a Solana airdrop campaign
+                quickly and affordably.
+              </p>
+            </div>
+
+            <div class="list-group-item px-0">
+              <strong>5. Use your affiliate link</strong>
+              <p class="mb-0 text-muted">
+                Always send your own affiliate link from
+                <strong>https://airdropservice.fun/affiliate</strong>
+                so the project signup can be connected to you.
+              </p>
+            </div>
+
+          </div>
+
+          <h2 class="h5 fw-bold mt-4">Message you can send to admins</h2>
+
+          <div class="bg-light border rounded p-3 mb-4">
+            <p class="mb-2">
+              Hi, I saw your crypto project and wanted to share a simple way to grow your community.
+            </p>
+
+            <p class="mb-2">
+              You can create a Solana airdrop campaign on AirdropService.fun and use it to attract
+              new users, holders, and community members.
+            </p>
+
+            <p class="mb-2">
+              The platform is easy to use, works with Phantom wallet, and has a low flat creator fee.
+            </p>
+
+            <p class="mb-2">
+              Create your airdrop here:
+              <br>
+              <strong>{{ affiliate_url|default('https://airdropservice.fun/affiliate') }}</strong>
+            </p>
+
+            <p class="mb-0">
+              It can help your project get more attention before launch, during presale, or while
+              growing your token community.
+            </p>
+          </div>
+
+          <h2 class="h5 fw-bold mt-4">Best groups to contact</h2>
+
+          <ul class="mb-4">
+            <li>Solana token projects</li>
+            <li>Meme coin groups</li>
+            <li>Presale and launch communities</li>
+            <li>Projects looking for holders</li>
+            <li>Crypto marketing and promotion groups</li>
+            <li>New tokens with Telegram but no airdrop yet</li>
+          </ul>
+
+          <div class="row g-3 mt-4">
+            <div class="col-md-6">
+              <a href="https://airdropservice.fun/affiliate"
+                 target="_blank"
+                 class="btn btn-primary w-100">
+                Get Your Affiliate Link
+              </a>
+            </div>
+
+            <div class="col-md-6">
+              <a href="{{ tg_link }}"
+                 target="_blank"
+                 class="btn btn-outline-primary w-100">
+                Open Telegram
+              </a>
+            </div>
+          </div>
+
+          <hr class="my-4">
+
+          <div class="text-center">
+            <p class="text-muted small mb-0">
+              Important: contact admins politely, explain the value, and avoid spam. Your goal is to
+              help projects grow with a useful airdrop campaign.
+            </p>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+{% endblock %}

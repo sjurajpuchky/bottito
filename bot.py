@@ -133,6 +133,10 @@ async def on_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.warning(f"🗑 Removed user {left_user.id} from database (left {update.effective_chat.id})")
 
 
+def generate_make_money_link(user_id: str, tg_link: str, mint: str):
+    return f"{BASE_URL}/make_money?user_id={user_id}&tg_link={tg_link}&mint={mint}"
+
+
 def generate_promote_link(user_id: str, mint: str, caption: str, logo: str | None, links: dict):
     # Create encryption object
     f = Fernet(SECRET_KEY)
@@ -243,7 +247,9 @@ def _btns_for_token(mint: str, caption: str, logo: str | None, telegram_url: str
 
     if use_promote_button and user_id != "":
         row3 = [InlineKeyboardButton("Promote in Channels",
-                                     url=generate_promote_link(user_id, mint, caption, logo, link_links))]
+                                     url=generate_promote_link(user_id, mint, caption, logo, link_links)),
+                InlineKeyboardButton("Make money", url=generate_make_money_link(user_id, tg_link, mint))
+                ]
         btns.append(row3)
     return InlineKeyboardMarkup(btns)
 
@@ -315,18 +321,12 @@ async def send_token_notice(user: User, mint_address: str, telegram: str | None,
 
 async def send_token(mint_address: str, telegram: str, metas: dict):
     with SessionLocal() as session:
-        trial_users = session.execute(
-            select(User)
-            .where(User.is_subscribed == False)
-        ).scalars().all()
 
         subscribed_users = session.execute(
             select(User)
-            .where(User.is_subscribed == True)
-            .where(User.subscribed_expiry_at >= _now())
         ).scalars().all()
 
-        for user in trial_users + subscribed_users:
+        for user in subscribed_users:
             logger.warning(f"Token {mint_address} sending to {user.chat_id}")
             await send_token_notice(user, mint_address, telegram, metas)
 
@@ -389,9 +389,6 @@ def get_token_metadata(mint_address: str):
 default_commands = [
     BotCommand("start", "Start interacting with the bot"),
     BotCommand("faq", "How does it works"),
-    BotCommand("membership", "Manage your subscription"),
-    BotCommand("referral", "Referral program settings"),
-    BotCommand("link", "Your referral link"),
     BotCommand("howto", "How to use bot"),
     BotCommand("settings", "Setup your filters and behaviour of bot"),
     BotCommand("mint", "Display token by mint address")
@@ -402,24 +399,6 @@ def _now():
     return datetime.datetime.utcnow()
 
 
-async def subscription_checker_task():
-    logger.warning("Scheduled task fired")
-    with SessionLocal() as session:
-        users = session.execute(select(User)).scalars().all()
-
-        for user in users:
-            if int(user.subscribed_expiry_at.timestamp()) < int(_now().timestamp()):
-                if user.is_subscribed:
-                    subscription = "Premium"
-                else:
-                    subscription = "Trial"
-
-                message = f"""🤖 *Your membership is: {subscription} is expired* use command /membership to renew 
-                your subscription.\n"""
-                try:
-                    await bot_app.bot.send_message(user.chat_id, message, parse_mode="Markdown")
-                except:
-                    pass
 
 
 # Fires when user starts/unblocks (bot becomes MEMBER) or blocks (bot becomes KICKED) in PRIVATE
@@ -1025,18 +1004,6 @@ async def main():
     await site.start()
     logger.warning("📮 IPC server listening on http://127.0.0.1:8787/ipc/post")
     scheduler = AsyncIOScheduler(timezone=TZ)
-
-    # Run every day at 18:00 local time
-    scheduler.add_job(
-        subscription_checker_task,
-        trigger=CronTrigger(hour=18, minute=0, timezone=TZ),
-        id="daily_18",
-        replace_existing=True,
-        misfire_grace_time=3600,  # run if missed within the last hour
-        coalesce=True,  # merge multiple missed runs into one
-        max_instances=1
-    )
-
     scheduler.start()
     logger.warning("✅ Scheduler started.")
 

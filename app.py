@@ -36,9 +36,17 @@ IPC_TOKEN = os.getenv("IPC_TOKEN")
 
 fernet = Fernet(SECRET_KEY)
 
+
 @app.route("/")
 def homepage():
     return render_template("homepage.html")
+
+
+@app.route("/make-money")
+def makemoney():
+    tg_link = request.args.get("tg_link")
+    mint = request.args.get("mint")
+    return render_template("makemoney.html", tg_link=tg_link, mint=mint)
 
 
 @app.route("/create_promotion")
@@ -76,7 +84,6 @@ def create_promotion():
         )
     except Exception as e:
         abort(400, f"Failed to decrypt: {e}")
-
 
 
 @app.route("/submit_promotion", methods=["POST"])
