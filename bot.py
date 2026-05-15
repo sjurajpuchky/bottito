@@ -393,7 +393,6 @@ async def send_token_notice(user: User, mint_address: str, telegram: str | None,
                 reply_markup=keyboard,
                 parse_mode="HTML"
             )
-            logger.warning(f"Token {mint_address} sent to {user.chat_id}")
         else:
             # Fallback: no image available
             await bot_app.bot.send_message(
@@ -402,7 +401,6 @@ async def send_token_notice(user: User, mint_address: str, telegram: str | None,
                 reply_markup=keyboard,
                 parse_mode="HTML"
             )
-            logger.warning(f"Token {mint_address} sent to {user.chat_id}")
     except TelegramError as e:
         pass
 
