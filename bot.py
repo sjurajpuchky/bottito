@@ -134,7 +134,7 @@ async def on_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def generate_make_money_link(user_id: str, tg_link: str, mint: str):
-    return f"{BASE_URL}/make_money?user_id={user_id}&tg_link={tg_link}&mint={mint}"
+    return f"{BASE_URL}/make-money?user_id={user_id}&tg_link={tg_link}&mint={mint}"
 
 
 def generate_promote_link(user_id: str, mint: str, caption: str, logo: str | None, links: dict):
@@ -343,8 +343,10 @@ async def process_token(mint_address: str, immediate=False):
 
 def get_telegram_from_metas(data):
     # ✅ Check for Telegram link in the 'links' field
-    links = data.get("links", {})
-    telegram = links.get("telegram")
+    links = data.get("links")
+
+    telegram = links.get("telegram") if links is not None else None
+
     if telegram:
         return telegram
 
