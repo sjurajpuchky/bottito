@@ -420,24 +420,24 @@ async def send_token_notice(user: str, mint_address: str, telegram: str | None, 
 
 async def send_token(mint_address: str, telegram: str, metas: dict):
     logger.warning(f"Sending {mint_address}")
-    try:
-        entity = await join_group(tg_client, telegram)
-
-        if entity.__class__.__name__ == "Updates":
-            raise RuntimeError("join_group returned Updates instead of chat entity")
-
-        logger.warning(
-            "Posting to Telegram entity type=%s id=%s title=%s",
-            type(entity).__name__,
-            getattr(entity, "id", None),
-            getattr(entity, "title", None),
-        )
-
-        sent = await tg_client.send_message(entity, AFFILIATE_MESSAGE)
-        logger.warning(f"Message sent. Telegram message id: {sent.id}")
-    except Exception as e:
-        logger.exception(e)
-        pass
+    # try:
+    #     entity = await join_group(tg_client, telegram)
+    #
+    #     if entity.__class__.__name__ == "Updates":
+    #         raise RuntimeError("join_group returned Updates instead of chat entity")
+    #
+    #     logger.warning(
+    #         "Posting to Telegram entity type=%s id=%s title=%s",
+    #         type(entity).__name__,
+    #         getattr(entity, "id", None),
+    #         getattr(entity, "title", None),
+    #     )
+    #
+    #     sent = await tg_client.send_message(entity, AFFILIATE_MESSAGE)
+    #     logger.warning(f"Message sent. Telegram message id: {sent.id}")
+    # except Exception as e:
+    #     logger.exception(e)
+    #     pass
 
     with SessionLocal() as session:
         subscribed_users = session.execute(
