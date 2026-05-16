@@ -1051,12 +1051,12 @@ async def claim_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def main():
-    global tg_client
-
-    tg_client = TelegramClient("telegram_session", API_ID, API_HASH)
-    await tg_client.start(phone=PHONE)
-
-    logger.warning("✅ Telethon user client started.")
+    # global tg_client
+    #
+    # tg_client = TelegramClient("telegram_session", API_ID, API_HASH)
+    # await tg_client.start(phone=PHONE)
+    #
+    # logger.warning("✅ Telethon user client started.")
     uri = "wss://pumpportal.fun/api/data"
 
     # Set default commands
