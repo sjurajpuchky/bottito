@@ -12,7 +12,6 @@ import requests
 import websockets
 from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 from fernet import Fernet
 from solana.rpc.api import Client
 from solders.keypair import Keypair
@@ -36,8 +35,6 @@ from telegram.ext import (
     filters,
     Application,
 )
-from websockets import ConnectionClosedError, WebSocketException
-
 from telethon import TelegramClient
 from telethon import types
 from telethon.errors import (
@@ -47,6 +44,7 @@ from telethon.errors import (
 )
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
+from websockets import ConnectionClosedError, WebSocketException
 
 from dbase import Base, User, TransactionSignature, ReferralPayment, Channel
 
@@ -136,9 +134,6 @@ def extract_private_invite_hash(link: str) -> str | None:
     return None
 
 
-
-
-
 def is_group_or_supergroup(entity) -> bool:
     """
     True only for:
@@ -186,6 +181,7 @@ def invite_info_is_group_or_supergroup(invite_info) -> bool:
         return True
 
     return False
+
 
 async def join_group(client: TelegramClient, group_link: str):
     private_hash = extract_private_invite_hash(group_link)
@@ -496,7 +492,7 @@ async def send_token(mint_address: str, telegram: str, metas: dict):
         if entity is None:
             logger.warning("Skipping Telegram target, not a group/supergroup: %s", telegram)
             return
-
+        await tg_client.send_message(entity, "Hi Everyone")
     except Exception:
         logger.exception("Failed to join %s", telegram)
 
