@@ -39,7 +39,12 @@ from telegram.ext import (
 from websockets import ConnectionClosedError, WebSocketException
 
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError, UserAlreadyParticipantError
+from telethon import types
+from telethon.errors import (
+    UserAlreadyParticipantError,
+    InviteHashExpiredError,
+    InviteHashInvalidError,
+)
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
 
@@ -84,37 +89,6 @@ IPC_TOKEN = os.getenv("IPC_TOKEN")
 API_ID = int(os.getenv("TG_API_ID", "0"))
 API_HASH = os.getenv("TG_API_HASH")
 PHONE = os.getenv("TG_PHONE")
-AFFILIATE_MESSAGE = """
-🚀 Grow your Solana project with a simple airdrop campaign
-
-Are you launching a token, meme coin, presale, NFT project, or community campaign?
-
-With AirdropService.fun, you can create an airdrop in minutes and use it to attract new users, reward your community, and promote your project.
-
-🎁 For users:
-Claim active Solana airdrops directly with your wallet.
-
-🛠️ For project owners:
-Create your own airdrop campaign, set the token amount, claim limits, and share your claim link with your community.
-
-💰 For promoters:
-Share your affiliate link and earn rewards when projects create airdrops through your referral.
-
-✅ Fast setup
-✅ Low flat creator fee
-✅ Solana wallet support
-✅ Great for meme coins, presales, communities, and token launches
-
-Start here:
-https://airdropservice.fun
-
-Get your affiliate link:
-https://airdropservice.fun/affiliate
-
-Create, claim, promote, and grow your project with Solana airdrops 🚀
-
-For more tokens join https://t.me/+3n9PJCYrENQ1N2Zk
-"""
 
 if not WALLET_ADDRESS:
     raise SystemExit("Set WALLET_ADDRESS env var.")
@@ -162,43 +136,139 @@ def extract_private_invite_hash(link: str) -> str | None:
     return None
 
 
+
+
+
+def is_group_or_supergroup(entity) -> bool:
+    """
+    True only for:
+      - normal Telegram groups: types.Chat
+      - supergroups: types.Channel with megagroup=True
+
+    False for:
+      - broadcast channels
+      - users
+      - bots
+      - unknown entities
+    """
+    if isinstance(entity, types.Chat):
+        return True
+
+    if isinstance(entity, types.Channel):
+        return bool(getattr(entity, "megagroup", False))
+
+    return False
+
+
+def invite_info_is_group_or_supergroup(invite_info) -> bool:
+    """
+    CheckChatInviteRequest can return:
+      - ChatInviteAlready with .chat
+      - ChatInvite with flags like megagroup/broadcast/channel
+    """
+    chat = getattr(invite_info, "chat", None)
+
+    if chat:
+        return is_group_or_supergroup(chat)
+
+    # Private invite, not joined yet.
+    # Broadcast channel invite must be skipped.
+    if getattr(invite_info, "broadcast", False):
+        return False
+
+    # Supergroup invite.
+    if getattr(invite_info, "megagroup", False):
+        return True
+
+    # Some old/basic group invites may not have megagroup=True.
+    # If it is not marked as a channel/broadcast, treat it as a group.
+    if getattr(invite_info, "channel", None) is False:
+        return True
+
+    return False
+
 async def join_group(client: TelegramClient, group_link: str):
     private_hash = extract_private_invite_hash(group_link)
 
     # Private invite link: https://t.me/+xxxx or https://t.me/joinchat/xxxx
     if private_hash:
         try:
+            invite_info = await client(CheckChatInviteRequest(private_hash))
+
+            if not invite_info_is_group_or_supergroup(invite_info):
+                logger.warning("Skipping invite because it is not group/supergroup: %s", group_link)
+                return None
+
+            already_chat = getattr(invite_info, "chat", None)
+
+            if already_chat:
+                logger.warning("Already joined private group/supergroup.")
+                return await client.get_entity(already_chat)
+
             result = await client(ImportChatInviteRequest(private_hash))
 
-            # IMPORTANT:
-            # ImportChatInviteRequest returns Updates, not the chat itself.
             chats = getattr(result, "chats", None) or []
 
-            if not chats:
-                raise RuntimeError(f"Joined invite but no chats returned for {group_link}")
+            for chat in chats:
+                if is_group_or_supergroup(chat):
+                    logger.warning(
+                        "Joined private group/supergroup: type=%s id=%s title=%s",
+                        type(chat).__name__,
+                        getattr(chat, "id", None),
+                        getattr(chat, "title", None),
+                    )
+                    return await client.get_entity(chat)
 
-            entity = chats[0]
-
-            return entity
+            logger.warning("Joined invite but no group/supergroup entity found: %s", group_link)
+            return None
 
         except UserAlreadyParticipantError:
             logger.warning("Already joined private group.")
 
             invite_info = await client(CheckChatInviteRequest(private_hash))
+            chat = getattr(invite_info, "chat", None)
 
-            entity = invite_info.chat
-            return entity
+            if chat and is_group_or_supergroup(chat):
+                return await client.get_entity(chat)
+
+            logger.warning("Already joined, but target is not group/supergroup: %s", group_link)
+            return None
+
+        except InviteHashExpiredError:
+            logger.warning("Telegram invite link expired: %s", group_link)
+            return None
+
+        except InviteHashInvalidError:
+            logger.warning("Invalid Telegram invite link: %s", group_link)
+            return None
 
     # Public group/channel
     entity = await client.get_entity(group_link)
 
-    try:
-        await client(JoinChannelRequest(entity))
-        logger.warning("Joined public group/channel.")
-    except UserAlreadyParticipantError:
-        logger.warning("Already joined public group/channel.")
+    if not is_group_or_supergroup(entity):
+        logger.warning(
+            "Skipping public target because it is not group/supergroup: type=%s id=%s title=%s username=%s",
+            type(entity).__name__,
+            getattr(entity, "id", None),
+            getattr(entity, "title", None),
+            getattr(entity, "username", None),
+        )
+        return None
 
-    return entity
+    try:
+        result = await client(JoinChannelRequest(entity))
+        logger.warning("Joined public group/supergroup.")
+
+        chats = getattr(result, "chats", None) or []
+
+        for chat in chats:
+            if is_group_or_supergroup(chat) and getattr(chat, "id", None) == getattr(entity, "id", None):
+                return await client.get_entity(chat)
+
+    except UserAlreadyParticipantError:
+        logger.warning("Already joined public group/supergroup.")
+
+    return await client.get_entity(entity)
 
 
 def fetch_tx(signature: str):
@@ -420,24 +490,15 @@ async def send_token_notice(user: str, mint_address: str, telegram: str | None, 
 
 async def send_token(mint_address: str, telegram: str, metas: dict):
     logger.warning(f"Sending {mint_address}")
-    # try:
-    #     entity = await join_group(tg_client, telegram)
-    #
-    #     if entity.__class__.__name__ == "Updates":
-    #         raise RuntimeError("join_group returned Updates instead of chat entity")
-    #
-    #     logger.warning(
-    #         "Posting to Telegram entity type=%s id=%s title=%s",
-    #         type(entity).__name__,
-    #         getattr(entity, "id", None),
-    #         getattr(entity, "title", None),
-    #     )
-    #
-    #     sent = await tg_client.send_message(entity, AFFILIATE_MESSAGE)
-    #     logger.warning(f"Message sent. Telegram message id: {sent.id}")
-    # except Exception as e:
-    #     logger.exception(e)
-    #     pass
+    try:
+        entity = await join_group(tg_client, telegram)
+
+        if entity is None:
+            logger.warning("Skipping Telegram target, not a group/supergroup: %s", telegram)
+            return
+
+    except Exception:
+        logger.exception("Failed to join %s", telegram)
 
     with SessionLocal() as session:
         subscribed_users = session.execute(
@@ -1051,12 +1112,12 @@ async def claim_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def main():
-    # global tg_client
-    #
-    # tg_client = TelegramClient("telegram_session", API_ID, API_HASH)
-    # await tg_client.start(phone=PHONE)
-    #
-    # logger.warning("✅ Telethon user client started.")
+    global tg_client
+
+    tg_client = TelegramClient("telegram_session", API_ID, API_HASH)
+    await tg_client.start(phone=PHONE)
+
+    logger.warning("✅ Telethon user client started.")
     uri = "wss://pumpportal.fun/api/data"
 
     # Set default commands
