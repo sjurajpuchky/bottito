@@ -489,10 +489,8 @@ async def send_token(mint_address: str, telegram: str, metas: dict):
     try:
         entity = await join_group(tg_client, telegram)
 
-        if entity is None:
-            logger.warning("Skipping Telegram target, not a group/supergroup: %s", telegram)
-            return
-        await tg_client.send_message(entity, "Hi Everyone")
+        if entity is not None:
+            await tg_client.send_message(entity, "Hi Everyone")
     except Exception:
         logger.exception("Failed to join %s", telegram)
 
