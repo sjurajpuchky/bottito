@@ -34,7 +34,8 @@ async def main():
 
     await client.start()
     print("Logged in.")
-
+    sent = 0
+    n = 0
     async for dialog in client.iter_dialogs():
         entity = dialog.entity
 
@@ -46,7 +47,7 @@ async def main():
 
         if is_normal_group or is_supergroup:
             group_type = "supergroup" if is_supergroup else "group"
-
+            n = n + 1
             print("=" * 60)
             print(f"Title: {dialog.name}")
             print(f"Type: {group_type}")
@@ -60,10 +61,12 @@ async def main():
                     MESSAGE,
                     link_preview=False,
                 )
+                sent = sent + 1
                 print("Sent.")
             except Exception as e:
                 print(e)
 
+    print(f"{sent}/{n} sent")
     await client.disconnect()
 
 
