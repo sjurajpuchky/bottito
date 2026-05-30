@@ -2,3 +2,4 @@ venv
 **/*.pyc
 **/__pycache__
 __pycache__
+telegram_session.session
