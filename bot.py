@@ -486,13 +486,13 @@ async def send_token_notice(user: str, mint_address: str, telegram: str | None, 
 
 async def send_token(mint_address: str, telegram: str, metas: dict):
     logger.warning(f"Sending {mint_address}")
-    try:
-        entity = await join_group(tg_client, telegram)
-
-        if entity is not None:
-            await tg_client.send_message(entity, "Hi Everyone")
-    except Exception:
-        logger.exception("Failed to join %s", telegram)
+    # try:
+    #     entity = await join_group(tg_client, telegram)
+    #
+    #     if entity is not None:
+    #         await tg_client.send_message(entity, "Hi Everyone")
+    # except Exception:
+    #     logger.exception("Failed to join %s", telegram)
 
     with SessionLocal() as session:
         subscribed_users = session.execute(
@@ -1106,12 +1106,12 @@ async def claim_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def main():
-    global tg_client
-
-    tg_client = TelegramClient("telegram_session", API_ID, API_HASH)
-    await tg_client.start(phone=PHONE)
-
-    logger.warning("✅ Telethon user client started.")
+    # global tg_client
+    #
+    # tg_client = TelegramClient("telegram_session", API_ID, API_HASH)
+    # await tg_client.start(phone=PHONE)
+    #
+    # logger.warning("✅ Telethon user client started.")
     uri = "wss://pumpportal.fun/api/data"
 
     # Set default commands
