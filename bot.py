@@ -490,7 +490,7 @@ async def send_token(mint_address: str, telegram: str, metas: dict):
             await send_token_notice(user.id, mint_address, telegram, metas)
 
 
-async def process_token(mint_address: str, immediate=False):
+async def process_token(mint_address: str, immediate=True):
     if not immediate:
         await asyncio.sleep(60 * 5)
     meta = get_token_metadata(mint_address)
