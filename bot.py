@@ -1,9 +1,11 @@
 import asyncio
+import base64
 import datetime
 import json
 import logging
 import os
 import re
+import struct
 from _decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -63,15 +65,6 @@ logger = logging.getLogger("bottito")
 if not dotenv.load_dotenv():
     logger.warning(".env file not found or could not be loaded.")
 TZ = ZoneInfo("Europe/Prague")
-MORALIS_API_KEY = os.getenv("MORALIS_API_KEY")  # Set this in your environment
-MORALIS_API_KEY1 = os.getenv("MORALIS_API_KEY1", "")
-MORALIS_API_KEY2 = os.getenv("MORALIS_API_KEY2", "")
-MORALIS_API_KEY3 = os.getenv("MORALIS_API_KEY3", "")
-MORALIS_API_KEY4 = os.getenv("MORALIS_API_KEY4", "")
-MORALIS_API_KEY5 = os.getenv("MORALIS_API_KEY5", "")
-MORALIS_API_KEY6 = os.getenv("MORALIS_API_KEY6", "")
-MORALIS_API_KEY7 = os.getenv("MORALIS_API_KEY7", "")
-MORALIS_API_KEY8 = os.getenv("MORALIS_API_KEY8", "")
 BASE_URL = os.getenv("BASE_URL")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SOLANA_WSS = os.getenv("SOLANA_WSS")
@@ -87,6 +80,8 @@ IPC_TOKEN = os.getenv("IPC_TOKEN")
 API_ID = int(os.getenv("TG_API_ID", "0"))
 API_HASH = os.getenv("TG_API_HASH")
 PHONE = os.getenv("TG_PHONE")
+REQUEST_TIMEOUT = 20
+METADATA_PROGRAM_ID = Pubkey.from_string("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")
 
 if not WALLET_ADDRESS:
     raise SystemExit("Set WALLET_ADDRESS env var.")
@@ -268,21 +263,13 @@ async def join_group(client: TelegramClient, group_link: str):
 
 
 def fetch_tx(signature: str):
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "getTransaction",
-        "params": [
+    return rpc_call(
+        "getTransaction",
+        [
             signature,
-            {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "commitment": "confirmed"}
+            {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "commitment": "confirmed"},
         ],
-    }
-    r = requests.post(SOLANA_HTTP, json=payload, timeout=20)
-    r.raise_for_status()
-    res = r.json()
-    if "error" in res:
-        raise RuntimeError(res["error"])
-    return res.get("result")
+    )
 
 
 async def on_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -537,24 +524,290 @@ def get_telegram_from_metas(data):
     return None
 
 
-def get_token_metadata(mint_address: str):
-    url = f"https://solana-gateway.moralis.io/token/mainnet/{mint_address}/metadata"
-    API_KEYS = [MORALIS_API_KEY, MORALIS_API_KEY1, MORALIS_API_KEY2,
-                MORALIS_API_KEY3, MORALIS_API_KEY4, MORALIS_API_KEY5,
-                MORALIS_API_KEY6, MORALIS_API_KEY7, MORALIS_API_KEY8]
-    try:
-        for M_API_KEY in API_KEYS:
-            if M_API_KEY != "":
-                HEADERS = {
-                    "accept": "application/json",
-                    "X-API-Key": M_API_KEY,
-                }
-                response = requests.get(url, headers=HEADERS)
-                if response.status_code != 200:
-                    continue
+def rpc_call(method: str, params):
+    payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+    response = requests.post(SOLANA_HTTP, json=payload, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    data = response.json()
+    if "error" in data:
+        raise RuntimeError(data["error"])
+    return data.get("result")
 
-                return response.json()
-    except Exception as e:
+
+def fetch_json(url: str, timeout: int = REQUEST_TIMEOUT) -> dict | list | None:
+    if not url:
+        return None
+
+    try:
+        response = requests.get(url, timeout=timeout)
+        response.raise_for_status()
+        return response.json()
+    except (requests.RequestException, ValueError):
+        return None
+
+
+def _clean_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.replace("\x00", "").strip()
+    return cleaned or None
+
+
+def _first_value(*values):
+    for value in values:
+        if value not in (None, "", [], {}):
+            return value
+    return None
+
+
+def _to_decimal(value) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return None
+
+
+def _format_money(value) -> str | None:
+    decimal_value = _to_decimal(value)
+    if decimal_value is None:
+        return None
+    quantized = decimal_value.quantize(Decimal("0.01"))
+    return f"${quantized:,.2f}"
+
+
+def _extract_links_from_dexscreener(pair: dict | None) -> dict:
+    if not pair:
+        return {}
+
+    info = pair.get("info") or {}
+    links = {}
+
+    for website in info.get("websites") or []:
+        label = (website.get("label") or "website").lower()
+        url = website.get("url")
+        if url and label not in links:
+            links[label] = url
+
+    for social in info.get("socials") or []:
+        social_type = (social.get("type") or "").lower()
+        url = social.get("url")
+        if url and social_type in {"telegram", "twitter", "x", "website"}:
+            key = "twitter" if social_type == "x" else social_type
+            links[key] = url
+
+    return links
+
+
+def _extract_links_from_offchain_metadata(metadata: dict | None) -> dict:
+    if not isinstance(metadata, dict):
+        return {}
+
+    links = {}
+    direct_fields = {
+        "telegram": metadata.get("telegram"),
+        "twitter": metadata.get("twitter"),
+        "website": metadata.get("website"),
+    }
+
+    for key, value in direct_fields.items():
+        if isinstance(value, str) and value:
+            links[key] = value
+
+    for container_key in ("links", "extensions"):
+        container = metadata.get(container_key)
+        if not isinstance(container, dict):
+            continue
+        for source_key in ("telegram", "twitter", "website"):
+            value = container.get(source_key)
+            if isinstance(value, str) and value:
+                links[source_key] = value
+
+    for social in metadata.get("socials") or []:
+        if not isinstance(social, dict):
+            continue
+        social_type = (social.get("type") or "").lower()
+        url = social.get("url")
+        if url and social_type in {"telegram", "twitter", "x", "website"}:
+            links["twitter" if social_type == "x" else social_type] = url
+
+    return links
+
+
+def _merge_links(*sources: dict | None) -> dict:
+    merged = {}
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in ("telegram", "website", "twitter"):
+            value = source.get(key)
+            if isinstance(value, str) and value and key not in merged:
+                merged[key] = value
+    return merged
+
+
+def _pick_best_pair(pairs: list[dict] | None, mint_address: str) -> dict | None:
+    if not pairs:
+        return None
+
+    mint_lower = mint_address.lower()
+
+    def pair_score(pair: dict):
+        base_address = ((pair.get("baseToken") or {}).get("address") or "").lower()
+        liquidity = _to_decimal((pair.get("liquidity") or {}).get("usd")) or Decimal("0")
+        volume = _to_decimal((pair.get("volume") or {}).get("h24")) or Decimal("0")
+        primary = 1 if base_address == mint_lower else 0
+        return primary, liquidity, volume
+
+    return max(pairs, key=pair_score)
+
+
+def get_dexscreener_token_data(mint_address: str) -> dict | None:
+    try:
+        response = requests.get(
+            f"https://api.dexscreener.com/latest/dex/tokens/{mint_address}",
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except (requests.RequestException, ValueError):
+        return None
+
+    pair = _pick_best_pair(data.get("pairs"), mint_address)
+    if not pair:
+        return None
+
+    return {
+        "pair": pair,
+        "name": _clean_text((pair.get("baseToken") or {}).get("name")),
+        "symbol": _clean_text((pair.get("baseToken") or {}).get("symbol")),
+        "logo": (pair.get("info") or {}).get("imageUrl"),
+        "links": _extract_links_from_dexscreener(pair),
+        "fdv": _first_value(pair.get("fdv"), pair.get("marketCap")),
+    }
+
+
+def get_asset_data(mint_address: str) -> dict | None:
+    try:
+        return rpc_call("getAsset", {"id": mint_address})
+    except Exception:
+        return None
+
+
+def _read_borsh_string(blob: bytes, offset: int) -> tuple[str | None, int]:
+    length = struct.unpack_from("<I", blob, offset)[0]
+    offset += 4
+    value = blob[offset:offset + length].decode("utf-8", errors="ignore")
+    offset += length
+    return _clean_text(value), offset
+
+
+def get_onchain_metadata(mint_address: str) -> dict | None:
+    try:
+        mint = Pubkey.from_string(mint_address)
+        metadata_pda, _ = Pubkey.find_program_address(
+            [b"metadata", bytes(METADATA_PROGRAM_ID), bytes(mint)],
+            METADATA_PROGRAM_ID,
+        )
+        account_info = rpc_call(
+            "getAccountInfo",
+            [str(metadata_pda), {"encoding": "base64", "commitment": "confirmed"}],
+        )
+        value = (account_info or {}).get("value") or {}
+        data = value.get("data") or []
+        if not data or not data[0]:
+            return None
+
+        raw = base64.b64decode(data[0])
+        offset = 1 + 32 + 32
+        name, offset = _read_borsh_string(raw, offset)
+        symbol, offset = _read_borsh_string(raw, offset)
+        uri, _ = _read_borsh_string(raw, offset)
+        return {"name": name, "symbol": symbol, "metadataUri": uri}
+    except Exception:
+        return None
+
+
+def get_token_supply_data(mint_address: str) -> dict | None:
+    try:
+        supply = rpc_call("getTokenSupply", [mint_address, {"commitment": "confirmed"}]) or {}
+    except Exception:
+        return None
+
+    value = supply.get("value") or {}
+    return {
+        "decimals": value.get("decimals"),
+        "supply": _to_decimal(value.get("uiAmountString")),
+    }
+
+
+def get_token_metadata(mint_address: str):
+    try:
+        asset = get_asset_data(mint_address) or {}
+        token_info = asset.get("token_info") or {}
+        content = asset.get("content") or {}
+        content_metadata = content.get("metadata") or {}
+        onchain_metadata = get_onchain_metadata(mint_address) or {}
+        supply_data = get_token_supply_data(mint_address) or {}
+        dex_data = get_dexscreener_token_data(mint_address) or {}
+        dex_pair = dex_data.get("pair") or {}
+
+        metadata_uri = _first_value(content.get("json_uri"), onchain_metadata.get("metadataUri"))
+        offchain_metadata = fetch_json(metadata_uri) if metadata_uri else None
+
+        image = _first_value(
+            (content.get("links") or {}).get("image"),
+            ((content.get("files") or [{}])[0].get("uri") if content.get("files") else None),
+            (offchain_metadata or {}).get("image"),
+            dex_data.get("logo"),
+        )
+
+        links = _merge_links(
+            _extract_links_from_offchain_metadata(offchain_metadata),
+            dex_data.get("links"),
+        )
+
+        supply = _first_value(supply_data.get("supply"), _to_decimal(token_info.get("supply")))
+        price = _to_decimal((token_info.get("price_info") or {}).get("price_per_token"))
+        fdv = _first_value(
+            dex_data.get("fdv"),
+            supply * price if supply is not None and price is not None else None,
+        )
+
+        metadata = {
+            "name": _first_value(
+                _clean_text(content_metadata.get("name")),
+                onchain_metadata.get("name"),
+                _clean_text((offchain_metadata or {}).get("name")),
+                dex_data.get("name"),
+            ) or "Unknown",
+            "symbol": _first_value(
+                _clean_text(content_metadata.get("symbol")),
+                onchain_metadata.get("symbol"),
+                _clean_text((offchain_metadata or {}).get("symbol")),
+                dex_data.get("symbol"),
+            ) or "",
+            "description": _first_value(
+                _clean_text(content_metadata.get("description")),
+                _clean_text((offchain_metadata or {}).get("description")),
+            ) or "",
+            "decimals": _first_value(token_info.get("decimals"), supply_data.get("decimals")),
+            "fullyDilutedValue": _format_money(fdv),
+            "logo": image,
+            "links": links,
+            "metaplex": {"metadataUri": metadata_uri} if metadata_uri else {},
+            "priceUsd": str(price) if price is not None else None,
+            "marketCap": _format_money(dex_pair.get("marketCap")),
+        }
+
+        if any(
+            metadata.get(key)
+            for key in ("name", "symbol", "description", "logo", "links", "metaplex", "decimals", "fullyDilutedValue")
+        ):
+            return metadata
+    except Exception:
+        logger.exception("Failed loading token metadata for %s", mint_address)
         return None
     return None
 
