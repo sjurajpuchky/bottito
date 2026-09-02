@@ -82,6 +82,7 @@ API_HASH = os.getenv("TG_API_HASH")
 PHONE = os.getenv("TG_PHONE")
 REQUEST_TIMEOUT = 20
 METADATA_PROGRAM_ID = Pubkey.from_string("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")
+TOKEN_PROCESS_CONCURRENCY = max(1, int(os.getenv("TOKEN_PROCESS_CONCURRENCY", "4")))
 
 if not WALLET_ADDRESS:
     raise SystemExit("Set WALLET_ADDRESS env var.")
@@ -105,6 +106,8 @@ DATABASE_URL = f"mysql+mysqlconnector://{os.getenv('MYSQL_USER')}:{os.getenv('MY
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base.metadata.create_all(engine)
+token_process_semaphore = asyncio.Semaphore(TOKEN_PROCESS_CONCURRENCY)
+background_tasks: set[asyncio.Task] = set()
 
 pending_profile_edits = {}
 pending_hash_edits = {}
@@ -280,9 +283,9 @@ async def on_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if left_user.is_bot:
         return
 
-    async with SessionLocal() as session:
-        await session.execute(delete(User).where(User.id == left_user.id))
-        await session.commit()
+    with SessionLocal() as session:
+        session.execute(delete(User).where(User.id == left_user.id))
+        session.commit()
 
     logger.warning(f"🗑 Removed user {left_user.id} from database (left {update.effective_chat.id})")
 
@@ -363,7 +366,9 @@ async def ipc_post_handler(request: web.Request):
             return web.json_response({"ok": False, "error": "mint/metas/chat_ids required"}, status=400)
 
         # Fire and forget: post to chats
-        asyncio.create_task(_promote_to_chats(mint, caption, logo, telegram_url, metas.get('links') or {}, chat_ids))
+        schedule_background_task(
+            _promote_to_chats(mint, caption, logo, telegram_url, metas.get('links') or {}, chat_ids)
+        )
         return web.json_response({"ok": True})
     except Exception as e:
         logger.exception(f"[IPC] Bad request: {e}")
@@ -471,7 +476,7 @@ async def send_token_notice(user: str, mint_address: str, telegram: str | None, 
         pass
 
 
-async def send_token(mint_address: str, telegram: str, metas: dict):
+async def send_token(mint_address: str, telegram: str | None, metas: dict):
     logger.warning(f"Sending {mint_address}")
     # try:
     #     entity = await join_group(tg_client, telegram)
@@ -482,21 +487,38 @@ async def send_token(mint_address: str, telegram: str, metas: dict):
     #     logger.exception("Failed to join %s", telegram)
 
     with SessionLocal() as session:
-        subscribed_users = session.execute(
-            select(User)
-        ).scalars().all()
+        subscribed_user_ids = session.execute(select(User.id)).scalars().all()
 
-        for user in subscribed_users:
-            await send_token_notice(user.id, mint_address, telegram, metas)
+    for user_id in subscribed_user_ids:
+        await send_token_notice(user_id, mint_address, telegram, metas)
 
 
 async def process_token(mint_address: str, immediate=True):
-    if not immediate:
-        await asyncio.sleep(60 * 5)
-    meta = get_token_metadata(mint_address)
-    if meta is not None:
-        telegram = get_telegram_from_metas(meta)
-        await send_token(mint_address, telegram, meta)
+    async with token_process_semaphore:
+        if not immediate:
+            await asyncio.sleep(60 * 5)
+        meta = get_token_metadata(mint_address)
+        if meta is not None:
+            telegram = get_telegram_from_metas(meta)
+            if telegram is not None:
+                await send_token(mint_address, telegram, meta)
+
+
+def _on_background_task_done(task: asyncio.Task):
+    background_tasks.discard(task)
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.exception("Background task failed")
+
+
+def schedule_background_task(coro):
+    task = asyncio.create_task(coro)
+    background_tasks.add(task)
+    task.add_done_callback(_on_background_task_done)
+    return task
 
 
 def get_telegram_from_metas(data):
@@ -998,7 +1020,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             referral_id=referral_id
         )
         session.commit()
-        await update.message.reply_text("✅ Registered via /start.")
+
+    await update.message.reply_text("✅ Registered via /start.")
 
 
 async def faq_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1142,13 +1165,18 @@ async def receive_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             res = session.execute(select(User).where(User.id == update.effective_user.id))
             user: User = res.scalar_one_or_none()
             if user is not None and user.is_super_admin:
-                users = session.execute(select(User).where(User.id != update.effective_user.id)).scalars().all()
-                for user_to_message in users:
-                    try:
-                        await bot_app.bot.send_message(user_to_message.id, message.split("#message_to_all:")[1])
-                    except:
-                        pass
-                return
+                user_ids = session.execute(
+                    select(User.id).where(User.id != update.effective_user.id)
+                ).scalars().all()
+            else:
+                user_ids = []
+        for user_id_to_message in user_ids:
+            try:
+                await bot_app.bot.send_message(user_id_to_message, message.split("#message_to_all:")[1])
+            except Exception:
+                pass
+        if user_ids:
+            return
 
     if "#message_to_expired:" in message:
         logger.warning(f"Message to all: {message}")
@@ -1156,14 +1184,22 @@ async def receive_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             res = session.execute(select(User).where(User.id == update.effective_user.id))
             user: User = res.scalar_one_or_none()
             if user is not None and user.is_super_admin:
-                users = session.execute(select(User).where(User.id != update.effective_user.id)).scalars().all()
-                for user_to_message in users:
-                    if int(user_to_message.subscribed_expiry_at.timestamp()) < int(_now().timestamp()):
-                        try:
-                            await bot_app.bot.send_message(user_to_message.id, message.split("#message_to_expired:")[1])
-                        except:
-                            pass
-                return
+                expired_user_ids = [
+                    user_to_message.id
+                    for user_to_message in session.execute(
+                        select(User).where(User.id != update.effective_user.id)
+                    ).scalars().all()
+                    if int(user_to_message.subscribed_expiry_at.timestamp()) < int(_now().timestamp())
+                ]
+            else:
+                expired_user_ids = []
+        for expired_user_id in expired_user_ids:
+            try:
+                await bot_app.bot.send_message(expired_user_id, message.split("#message_to_expired:")[1])
+            except Exception:
+                pass
+        if expired_user_ids:
+            return
 
     if "#pin_to_all:" in message:
         logger.warning(f"Pin to all: {message}")
@@ -1171,19 +1207,25 @@ async def receive_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             res = session.execute(select(User).where(User.id == update.effective_user.id))
             user: User = res.scalar_one_or_none()
             if user is not None and user.is_super_admin:
-                users = session.execute(select(User).where(User.id != update.effective_user.id)).scalars().all()
-                for user_to_message in users:
-                    try:
-                        msg_id = (await bot_app.bot.send_message(user_to_message.id,
-                                                                 message.split("#pin_to_all:")[1])).message_id
-                        await context.bot.pin_chat_message(
-                            chat_id=user_to_message.id,
-                            message_id=msg_id,
-                            disable_notification=False
-                        )
-                    except:
-                        pass
-                return
+                user_ids = session.execute(
+                    select(User.id).where(User.id != update.effective_user.id)
+                ).scalars().all()
+            else:
+                user_ids = []
+        for user_id_to_message in user_ids:
+            try:
+                msg_id = (
+                    await bot_app.bot.send_message(user_id_to_message, message.split("#pin_to_all:")[1])
+                ).message_id
+                await context.bot.pin_chat_message(
+                    chat_id=user_id_to_message,
+                    message_id=msg_id,
+                    disable_notification=False
+                )
+            except Exception:
+                pass
+        if user_ids:
+            return
 
     if "#mint_to_all:" in message:
         logger.warning(f"Mint to all: {message}")
@@ -1224,37 +1266,37 @@ async def receive_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         try:
             with SessionLocal() as session:
-                with SessionLocal() as session:
-                    res = session.execute(select(User).where(User.id == update.effective_user.id))
-                    user: User = res.scalar_one_or_none()
-                    # Fast existence check
-                    exists = session.execute(
-                        select(TransactionSignature.id).where(
-                            TransactionSignature.user_id == user.id,
-                            TransactionSignature.signature == message
+                res = session.execute(select(User).where(User.id == update.effective_user.id))
+                user: User = res.scalar_one_or_none()
+                # Fast existence check
+                exists = session.execute(
+                    select(TransactionSignature.id).where(
+                        TransactionSignature.user_id == user.id,
+                        TransactionSignature.signature == message
+                    )
+                ).first()
+                if exists:
+                    raise Exception("Transaction already exists")  # already recorded
+                if user is not None and check_transaction(message):
+                    tx = TransactionSignature(
+                        user_id=user.id,
+                        signature=message
+                    )
+                    session.add(tx)
+                    user.subscribed_expiry_at = _now() + datetime.timedelta(31)
+                    user.is_subscribed = True
+                    session.commit()
+                    referral_user = session.execute(
+                        select(User).where(
+                            User.referral_id == user.referral_id
                         )
-                    ).first()
-                    if exists:
-                        raise Exception("Transaction already exists")  # already recorded
-                    if user is not None and check_transaction(message):
-                        tx = TransactionSignature(
-                            user_id=user.id,
-                            signature=message
-                        )
-                        session.add(tx)
-                        user.subscribed_expiry_at = _now() + datetime.timedelta(31)
-                        user.is_subscribed = True
-                        session.commit()
-                        referral_user = session.execute(
-                            select(User).where(
-                                User.referral_id == user.referral_id
-                            )
-                        ).scalar_one_or_none()
-                        if referral_user:
-                            payout_referral(referral_user, user)
-                        await update.message.reply_text("✅ Your transaction was checked successfully.")
-                    else:
-                        await update.message.reply_text("⚠️ Failed to check transaction.")
+                    ).scalar_one_or_none()
+                    if referral_user:
+                        payout_referral(referral_user, user)
+                    reply_text = "✅ Your transaction was checked successfully."
+                else:
+                    reply_text = "⚠️ Failed to check transaction."
+            await update.message.reply_text(reply_text)
         except Exception as e:
             logging.exception(f"Failed to check transaction {message}: {e}")
             await update.message.reply_text("⚠️ Failed to check transaction.")
@@ -1411,7 +1453,7 @@ async def main():
                         data = json.loads(message)
                         mint = data.get("mint")
                         if mint:
-                            asyncio.create_task(process_token(mint))
+                            schedule_background_task(process_token(mint))
                     except Exception as e:
                         logger.exception(f"⚠️ Error processing message: {e}")
 
