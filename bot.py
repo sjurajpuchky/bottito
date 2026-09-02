@@ -496,8 +496,7 @@ async def process_token(mint_address: str, immediate=True):
     meta = get_token_metadata(mint_address)
     if meta is not None:
         telegram = get_telegram_from_metas(meta)
-        if telegram is not None:
-            await send_token(mint_address, telegram, meta)
+        await send_token(mint_address, telegram, meta)
 
 
 def get_telegram_from_metas(data):
