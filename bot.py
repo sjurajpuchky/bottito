@@ -83,6 +83,9 @@ PHONE = os.getenv("TG_PHONE")
 REQUEST_TIMEOUT = 20
 METADATA_PROGRAM_ID = Pubkey.from_string("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")
 TOKEN_PROCESS_CONCURRENCY = max(1, int(os.getenv("TOKEN_PROCESS_CONCURRENCY", "4")))
+WS_PING_INTERVAL = float(os.getenv("WS_PING_INTERVAL", "20"))
+WS_PING_TIMEOUT = float(os.getenv("WS_PING_TIMEOUT", "30"))
+WS_OPEN_TIMEOUT = float(os.getenv("WS_OPEN_TIMEOUT", "20"))
 
 if not WALLET_ADDRESS:
     raise SystemExit("Set WALLET_ADDRESS env var.")
@@ -497,9 +500,9 @@ async def process_token(mint_address: str, immediate=True):
     async with token_process_semaphore:
         if not immediate:
             await asyncio.sleep(60 * 5)
-        meta = get_token_metadata(mint_address)
+        meta = await asyncio.to_thread(get_token_metadata, mint_address)
         if meta is not None:
-            telegram = get_telegram_from_metas(meta)
+            telegram = await asyncio.to_thread(get_telegram_from_metas, meta)
             if telegram is not None:
                 await send_token(mint_address, telegram, meta)
 
@@ -1444,7 +1447,12 @@ async def main():
 
     while True:
         try:
-            async with websockets.connect(uri, ping_interval=20, ping_timeout=10) as ws:
+            async with websockets.connect(
+                uri,
+                ping_interval=WS_PING_INTERVAL,
+                ping_timeout=WS_PING_TIMEOUT,
+                open_timeout=WS_OPEN_TIMEOUT,
+            ) as ws:
                 await ws.send(json.dumps({"method": "subscribeNewToken"}))
                 logger.warning("✅ Subscribed to PumpPortal...")
 
