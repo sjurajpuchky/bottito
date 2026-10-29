@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import (
     BigInteger,
@@ -18,7 +18,7 @@ Base = declarative_base()
 
 
 def _utcnow_naive():
-    return datetime.utcnow().replace(tzinfo=None)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class User(Base):
@@ -166,3 +166,9 @@ def release_token_claim(session, mint: str) -> None:
         )
     )
     session.commit()
+
+
+def remove_user(session, user_id: int) -> bool:
+    result = session.execute(delete(User).where(User.id == user_id))
+    session.commit()
+    return result.rowcount > 0

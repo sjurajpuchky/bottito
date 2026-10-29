@@ -28,7 +28,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram._botcommand import BotCommand
 from telegram._botcommandscope import BotCommandScopeDefault
 from telegram.constants import ChatMemberStatus
-from telegram.error import TelegramError
+from telegram.error import Forbidden, TelegramError
 from telegram.ext import CallbackQueryHandler
 from telegram.ext import CommandHandler, ChatMemberHandler
 from telegram.ext import (
@@ -56,6 +56,7 @@ from dbase import (
     User,
     claim_token_mint,
     mark_token_sent,
+    remove_user,
     release_token_claim,
 )
 
@@ -485,6 +486,16 @@ async def send_token_notice(user: str, mint_address: str, telegram: str | None, 
                 parse_mode="HTML"
             )
         return True
+    except Forbidden as e:
+        with SessionLocal() as session:
+            removed = remove_user(session, int(user))
+        logger.warning(
+            "Telegram account %s returned Forbidden; removed_from_db=%s: %s",
+            user,
+            removed,
+            e,
+        )
+        return False
     except TelegramError as e:
         logger.warning("Failed sending token %s to user %s: %s", mint_address, user, e)
         return False
