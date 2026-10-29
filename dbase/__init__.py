@@ -1,9 +1,24 @@
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, BigInteger, PrimaryKeyConstraint
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    PrimaryKeyConstraint,
+    String,
+    delete,
+    update,
+)
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import relationship, declarative_base
 
 Base = declarative_base()
+
+
+def _utcnow_naive():
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class User(Base):
@@ -88,3 +103,66 @@ class Channel(Base):
 
     def __repr__(self):
         return f"<Channel(user_id={self.user_id}, chat_id={self.chat_id})>"
+
+
+class SentToken(Base):
+    __tablename__ = "sent_tokens"
+
+    mint = Column(String(64), primary_key=True)
+    status = Column(String(16), nullable=False, default="processing")
+    claimed_at = Column(DateTime, nullable=False, default=_utcnow_naive)
+    sent_at = Column(DateTime, nullable=True)
+
+    def __repr__(self):
+        return f"<SentToken(mint={self.mint}, status={self.status})>"
+
+
+def claim_token_mint(session, mint: str, claim_ttl: timedelta = timedelta(minutes=30)) -> bool:
+    """Atomically reserve a mint for delivery.
+
+    A completed mint is never reclaimed. A processing claim can be reclaimed after
+    the TTL so a crashed worker does not block the mint forever.
+    """
+    normalized_mint = mint.strip()
+    if not normalized_mint:
+        return False
+
+    now = _utcnow_naive()
+    session.add(SentToken(mint=normalized_mint, status="processing", claimed_at=now))
+    try:
+        session.commit()
+        return True
+    except IntegrityError:
+        session.rollback()
+
+    stale_before = now - claim_ttl
+    result = session.execute(
+        update(SentToken)
+        .where(
+            SentToken.mint == normalized_mint,
+            SentToken.status == "processing",
+            SentToken.claimed_at < stale_before,
+        )
+        .values(claimed_at=now)
+    )
+    session.commit()
+    return result.rowcount == 1
+
+
+def mark_token_sent(session, mint: str) -> None:
+    session.execute(
+        update(SentToken)
+        .where(SentToken.mint == mint.strip(), SentToken.status == "processing")
+        .values(status="sent", sent_at=_utcnow_naive())
+    )
+    session.commit()
+
+
+def release_token_claim(session, mint: str) -> None:
+    session.execute(
+        delete(SentToken).where(
+            SentToken.mint == mint.strip(),
+            SentToken.status == "processing",
+        )
+    )
+    session.commit()

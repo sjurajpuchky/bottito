@@ -48,7 +48,16 @@ from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
 from websockets import ConnectionClosedError, WebSocketException
 
-from dbase import Base, User, TransactionSignature, ReferralPayment, Channel
+from dbase import (
+    Base,
+    Channel,
+    ReferralPayment,
+    TransactionSignature,
+    User,
+    claim_token_mint,
+    mark_token_sent,
+    release_token_claim,
+)
 
 # -------------------------------
 # ✅ Logging Configuration
@@ -475,8 +484,10 @@ async def send_token_notice(user: str, mint_address: str, telegram: str | None, 
                 reply_markup=keyboard,
                 parse_mode="HTML"
             )
+        return True
     except TelegramError as e:
-        pass
+        logger.warning("Failed sending token %s to user %s: %s", mint_address, user, e)
+        return False
 
 
 async def send_token(mint_address: str, telegram: str | None, metas: dict):
@@ -492,19 +503,45 @@ async def send_token(mint_address: str, telegram: str | None, metas: dict):
     with SessionLocal() as session:
         subscribed_user_ids = session.execute(select(User.id)).scalars().all()
 
+    sent_count = 0
     for user_id in subscribed_user_ids:
-        await send_token_notice(user_id, mint_address, telegram, metas)
+        if await send_token_notice(user_id, mint_address, telegram, metas):
+            sent_count += 1
+    return sent_count
 
 
 async def process_token(mint_address: str, immediate=True):
-    async with token_process_semaphore:
-        if not immediate:
-            await asyncio.sleep(60 * 5)
-        meta = await asyncio.to_thread(get_token_metadata, mint_address)
-        if meta is not None:
-            telegram = await asyncio.to_thread(get_telegram_from_metas, meta)
-            if telegram is not None:
-                await send_token(mint_address, telegram, meta)
+    mint_address = mint_address.strip()
+    if not mint_address:
+        return False
+
+    with SessionLocal() as session:
+        claimed = claim_token_mint(session, mint_address)
+    if not claimed:
+        logger.warning("Skipping duplicate token mint %s", mint_address)
+        return False
+
+    delivered = False
+    try:
+        async with token_process_semaphore:
+            if not immediate:
+                await asyncio.sleep(60 * 5)
+            meta = await asyncio.to_thread(get_token_metadata, mint_address)
+            if meta is not None:
+                telegram = await asyncio.to_thread(get_telegram_from_metas, meta)
+                if telegram is not None:
+                    sent_count = await send_token(mint_address, telegram, meta)
+                    delivered = sent_count > 0
+
+        if delivered:
+            with SessionLocal() as session:
+                mark_token_sent(session, mint_address)
+            logger.warning("Stored sent token mint %s", mint_address)
+        return delivered
+    finally:
+        if not delivered:
+            with SessionLocal() as session:
+                release_token_claim(session, mint_address)
 
 
 def _on_background_task_done(task: asyncio.Task):
