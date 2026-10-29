@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import (
     BigInteger,
@@ -18,7 +18,7 @@ Base = declarative_base()
 
 
 def _utcnow_naive():
-    return datetime.now(UTC).replace(tzinfo=None)
+    return datetime.utcnow().replace(tzinfo=None)
 
 
 class User(Base):
